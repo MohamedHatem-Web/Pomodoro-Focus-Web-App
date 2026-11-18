@@ -1,12 +1,27 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type ChangeEvent } from 'react';
 import { translations, Language } from './i18n';
+import QuranLibrary from './QuranLibrary';
 
 // Types
 type TimerMode = 'focus' | 'shortBreak' | 'longBreak';
 type Theme = 'light' | 'dark';
-type View = 'timer' | 'planner' | 'reports' | 'prayers';
+type View = 'timer' | 'planner' | 'reports' | 'prayers' | 'quran';
 type ReportPeriod = 'week' | 'month';
 type PrayerCategoryId = 'study' | 'exam' | 'ease' | 'forgiveness' | 'after';
+type AmbientSound = 'rain' | 'white-noise';
+
+interface AmbientPlayer {
+  context: AudioContext;
+  source: AudioBufferSourceNode;
+  gain: GainNode;
+}
+
+interface BackupPayload {
+  format: 'focus-to-work-backup';
+  version: 1;
+  exportedAt: string;
+  data: Record<string, string>;
+}
 
 const prayerCategories: {
   id: PrayerCategoryId;
@@ -198,10 +213,24 @@ function saveStats(stats: DailyStats) {
   localStorage.setItem(key, JSON.stringify(stats));
 }
 
+function isActivityEvent(value: unknown): value is ActivityEvent {
+  if (!isRecord(value) ||
+    typeof value.id !== 'string' ||
+    !['focus_completed', 'task_added', 'task_completed', 'task_uncompleted'].includes(String(value.type)) ||
+    !Number.isFinite(value.timestamp) ||
+    !Number.isFinite(new Date(Number(value.timestamp)).getTime())) return false;
+  const isTaskEvent = value.type !== 'focus_completed';
+  return (!isTaskEvent || typeof value.taskId === 'string') &&
+    (value.type !== 'focus_completed' ||
+      (Number.isFinite(value.minutes) && Number(value.minutes) > 0 && Number(value.minutes) <= 480)) &&
+    (value.taskId === undefined || typeof value.taskId === 'string') &&
+    (value.minutes === undefined || Number.isFinite(value.minutes));
+}
+
 function loadActivityEvents(): ActivityEvent[] {
   try {
-    const saved = JSON.parse(localStorage.getItem('pomodoro_activity_events') || '[]');
-    return Array.isArray(saved) ? saved : [];
+    const saved: unknown = JSON.parse(localStorage.getItem('pomodoro_activity_events') || '[]');
+    return Array.isArray(saved) ? saved.filter(isActivityEvent) : [];
   } catch {
     return [];
   }
@@ -235,6 +264,41 @@ function recordFocusCompletion(minutes: number) {
   saveStats(updated);
   recordActivity({ type: 'focus_completed', minutes });
   return updated;
+}
+
+function getFocusDayKeys(events: ActivityEvent[]): Set<string> {
+  return new Set(events
+    .filter((event) => event.type === 'focus_completed' && Number.isFinite(event.timestamp))
+    .map((event) => getDateKey(new Date(event.timestamp)))
+    .filter((date) => date !== 'NaN-NaN-NaN'));
+}
+
+function getStreakSummary(focusDays: Set<string>, now = new Date()): { current: number; longest: number } {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const firstCurrentDay = new Date(today);
+  if (!focusDays.has(getDateKey(firstCurrentDay))) firstCurrentDay.setDate(firstCurrentDay.getDate() - 1);
+
+  let current = 0;
+  const date = new Date(firstCurrentDay);
+  while (focusDays.has(getDateKey(date))) {
+    current += 1;
+    date.setDate(date.getDate() - 1);
+  }
+
+  const sortedDays = [...focusDays].sort();
+  let longest = 0;
+  let run = 0;
+  let previousDate: Date | null = null;
+  sortedDays.forEach((day) => {
+    const currentDate = new Date(`${day}T12:00:00`);
+    const consecutive = previousDate !== null &&
+      Math.round((currentDate.getTime() - previousDate.getTime()) / 86400000) === 1;
+    run = consecutive ? run + 1 : 1;
+    longest = Math.max(longest, run);
+    previousDate = currentDate;
+  });
+
+  return { current, longest };
 }
 
 function loadSettings(): TimerSettings {
@@ -284,6 +348,25 @@ function loadTodos(): TodoTask[] {
   }
 }
 
+function loadFavoritePrayerIds(): string[] {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem('pomodoro_favorite_prayers') || '[]');
+    return Array.isArray(saved)
+      ? [...new Set(saved.filter((id): id is string =>
+        typeof id === 'string' && /^(study|exam|ease|forgiveness|after)-\d+$/.test(id)))]
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadAmbientVolume(): number {
+  const raw = localStorage.getItem('pomodoro_ambient_volume');
+  if (raw === null) return 0.12;
+  const saved = Number(raw);
+  return Number.isFinite(saved) ? Math.min(0.3, Math.max(0, saved)) : 0.12;
+}
+
 function loadSavedTimerState(): SavedTimerState | null {
   try {
     const saved = JSON.parse(localStorage.getItem('pomodoro_timer_state') || 'null');
@@ -291,6 +374,183 @@ function loadSavedTimerState(): SavedTimerState | null {
   } catch {
     return null;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isTodoTaskArray(value: unknown): value is TodoTask[] {
+  return Array.isArray(value) && value.every((task) =>
+    isRecord(task) &&
+    typeof task.id === 'string' &&
+    typeof task.text === 'string' &&
+    typeof task.completed === 'boolean');
+}
+
+function isPlannedSession(value: unknown): value is PlannedSession {
+  return isRecord(value) &&
+    isTodoTaskArray(value.tasks) &&
+    Number.isFinite(value.timePerTask) && Number(value.timePerTask) >= 1 && Number(value.timePerTask) <= 480 &&
+    Number.isFinite(value.breakDuration) && Number(value.breakDuration) >= 0 && Number(value.breakDuration) <= 60 &&
+    Number.isInteger(value.currentTaskIndex) && Number(value.currentTaskIndex) >= 0 &&
+    Number(value.currentTaskIndex) < value.tasks.length &&
+    (value.currentPhase === 'focus' || value.currentPhase === 'break') &&
+    typeof value.isActive === 'boolean' &&
+    Number.isFinite(value.phaseTimeLeft) && Number(value.phaseTimeLeft) >= 0 && Number(value.phaseTimeLeft) <= 480 * 60 &&
+    Number.isInteger(value.breaksDone) && Number(value.breaksDone) >= 0 && Number(value.breaksDone) <= 10 &&
+    Number.isInteger(value.breakCount) && Number(value.breakCount) >= 0 && Number(value.breakCount) <= 10 &&
+    Number.isInteger(value.pendingTaskIndex) && Number(value.pendingTaskIndex) >= 0 &&
+    Number(value.pendingTaskIndex) < value.tasks.length;
+}
+
+function isSavedTimerState(value: unknown): value is SavedTimerState {
+  return isRecord(value) &&
+    (value.mode === 'focus' || value.mode === 'shortBreak' || value.mode === 'longBreak') &&
+    Number.isFinite(value.timeLeft) && Number(value.timeLeft) >= 0 && Number(value.timeLeft) <= 480 * 60 &&
+    typeof value.isRunning === 'boolean' &&
+    (value.isRunning ? Number.isFinite(value.deadline) : value.deadline === null) &&
+    (value.view === 'timer' || value.view === 'planner' || value.view === 'reports' || value.view === 'prayers' || value.view === 'quran') &&
+    (value.plannedSession === null || isPlannedSession(value.plannedSession));
+}
+
+function getAppStorageData(): Record<string, string> {
+  const data: Record<string, string> = {};
+  const knownKeys = new Set([
+    'pomodoro_activity_events',
+    'pomodoro_ambient_volume',
+    'pomodoro_favorite_prayers',
+    'pomodoro_quran_preferences',
+    'pomodoro_lang',
+    'pomodoro_productivity_goals',
+    'pomodoro_sessions_completed',
+    'pomodoro_settings',
+    'pomodoro_theme',
+    'pomodoro_timer_state',
+    'pomodoro_todos',
+  ]);
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (key && (knownKeys.has(key) || /^pomodoro_stats_\d{4}-\d{2}-\d{2}$/.test(key))) {
+      const value = localStorage.getItem(key);
+      if (value !== null) data[key] = value;
+    }
+  }
+  return data;
+}
+
+function validateBackup(value: unknown): BackupPayload {
+  if (
+    !isRecord(value) ||
+    value.format !== 'focus-to-work-backup' ||
+    value.version !== 1 ||
+    typeof value.exportedAt !== 'string' ||
+    !isRecord(value.data)
+  ) {
+    throw new Error('Unsupported or invalid backup format.');
+  }
+
+  const data: Record<string, string> = {};
+  const knownKeys = new Set([
+    'pomodoro_activity_events',
+    'pomodoro_ambient_volume',
+    'pomodoro_favorite_prayers',
+    'pomodoro_quran_preferences',
+    'pomodoro_lang',
+    'pomodoro_productivity_goals',
+    'pomodoro_sessions_completed',
+    'pomodoro_settings',
+    'pomodoro_theme',
+    'pomodoro_timer_state',
+    'pomodoro_todos',
+  ]);
+
+  Object.entries(value.data).forEach(([key, rawValue]) => {
+    if (!(knownKeys.has(key) || /^pomodoro_stats_\d{4}-\d{2}-\d{2}$/.test(key)) || typeof rawValue !== 'string') {
+      throw new Error(`Unsupported backup field: ${key}`);
+    }
+
+    if (key === 'pomodoro_theme' && rawValue !== 'light' && rawValue !== 'dark') {
+      throw new Error('Invalid theme setting in backup.');
+    }
+    if (key === 'pomodoro_lang' && rawValue !== 'en' && rawValue !== 'ar') {
+      throw new Error('Invalid language setting in backup.');
+    }
+    if (key === 'pomodoro_sessions_completed' && (!Number.isInteger(Number(rawValue)) || Number(rawValue) < 0)) {
+      throw new Error('Invalid session count in backup.');
+    }
+    if (key === 'pomodoro_ambient_volume' && (!Number.isFinite(Number(rawValue)) || Number(rawValue) < 0 || Number(rawValue) > 0.3)) {
+      throw new Error('Invalid ambient volume in backup.');
+    }
+
+    if (key === 'pomodoro_activity_events') {
+      const events: unknown = JSON.parse(rawValue);
+      const validEvents = Array.isArray(events) && events.every(isActivityEvent);
+      if (!validEvents) throw new Error('Invalid activity history in backup.');
+    } else if (key === 'pomodoro_todos') {
+      if (!isTodoTaskArray(JSON.parse(rawValue))) throw new Error('Invalid task list in backup.');
+    } else if (key === 'pomodoro_settings') {
+      const settings: unknown = JSON.parse(rawValue);
+      if (!isRecord(settings) ||
+        !Number.isFinite(settings.focus) || Number(settings.focus) < 1 || Number(settings.focus) > 120 ||
+        !Number.isFinite(settings.shortBreak) || Number(settings.shortBreak) < 1 || Number(settings.shortBreak) > 30 ||
+        !Number.isFinite(settings.longBreak) || Number(settings.longBreak) < 1 || Number(settings.longBreak) > 60 ||
+        !Number.isInteger(settings.longBreakInterval) || Number(settings.longBreakInterval) < 2 || Number(settings.longBreakInterval) > 10) {
+        throw new Error('Invalid timer settings in backup.');
+      }
+    } else if (key === 'pomodoro_productivity_goals') {
+      const goals: unknown = JSON.parse(rawValue);
+      if (!isRecord(goals) ||
+        !Number.isFinite(goals.dailyFocusMinutes) || Number(goals.dailyFocusMinutes) < 30 || Number(goals.dailyFocusMinutes) > 600 ||
+        !Number.isFinite(goals.studyDaysPerWeek) || Number(goals.studyDaysPerWeek) < 1 || Number(goals.studyDaysPerWeek) > 7) {
+        throw new Error('Invalid study goals in backup.');
+      }
+    } else if (key === 'pomodoro_timer_state') {
+      if (!isSavedTimerState(JSON.parse(rawValue))) throw new Error('Invalid timer state in backup.');
+    } else if (key === 'pomodoro_favorite_prayers') {
+      const favorites: unknown = JSON.parse(rawValue);
+      if (!Array.isArray(favorites) || !favorites.every((id) => typeof id === 'string' && /^(study|exam|ease|forgiveness|after)-\d+$/.test(id))) {
+        throw new Error('Invalid favorite prayers in backup.');
+      }
+    } else if (key === 'pomodoro_quran_preferences') {
+      const preferences: unknown = JSON.parse(rawValue);
+      const isOptionalId = (id: unknown) => id === null || (Number.isInteger(id) && Number(id) > 0);
+      const isIdList = (ids: unknown, maximum: number) =>
+        Array.isArray(ids) && ids.every((id) => Number.isInteger(id) && Number(id) > 0 && Number(id) <= maximum);
+      if (!isRecord(preferences) ||
+        !isOptionalId(preferences.reciterId) ||
+        !isOptionalId(preferences.moshafId) ||
+        !isOptionalId(preferences.surahId) ||
+        !Number.isFinite(preferences.volume) || Number(preferences.volume) < 0 || Number(preferences.volume) > 1 ||
+        !isIdList(preferences.favoriteReciterIds, Number.MAX_SAFE_INTEGER) ||
+        !isIdList(preferences.favoriteSurahIds, 114) ||
+        !Number.isFinite(preferences.currentTime) || Number(preferences.currentTime) < 0 ||
+        typeof preferences.wasPlaying !== 'boolean' ||
+        typeof preferences.hasPlayed !== 'boolean') {
+        throw new Error('Invalid Quran preferences in backup.');
+      }
+    } else if (/^pomodoro_stats_\d{4}-\d{2}-\d{2}$/.test(key)) {
+      const stats: unknown = JSON.parse(rawValue);
+      const date = key.slice('pomodoro_stats_'.length);
+      if (!isRecord(stats) ||
+        stats.date !== date ||
+        !Number.isInteger(stats.focusSessions) || Number(stats.focusSessions) < 0 ||
+        !Number.isFinite(stats.totalFocusMinutes) || Number(stats.totalFocusMinutes) < 0) {
+        throw new Error(`Invalid daily statistics in backup: ${date}`);
+      }
+    } else if (key.startsWith('pomodoro_') && rawValue.length > 10 * 1024 * 1024) {
+      throw new Error(`Backup field is too large: ${key}`);
+    }
+
+    data[key] = rawValue;
+  });
+
+  return {
+    format: 'focus-to-work-backup',
+    version: 1,
+    exportedAt: value.exportedAt,
+    data,
+  };
 }
 
 function formatDuration(minutes: number): string {
@@ -467,7 +727,18 @@ export default function App() {
   const [plannerHours, setPlannerHours] = useState(2);
   const [plannerBreakCount, setPlannerBreakCount] = useState(2);
   const [reportPeriod, setReportPeriod] = useState<ReportPeriod>('week');
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
   const [prayerFilter, setPrayerFilter] = useState<PrayerCategoryId | 'all'>('all');
+  const [showFavoritePrayers, setShowFavoritePrayers] = useState(false);
+  const [favoritePrayerIds, setFavoritePrayerIds] = useState<string[]>(loadFavoritePrayerIds);
+  const [ambientSound, setAmbientSound] = useState<AmbientSound | null>(null);
+  const [ambientVolume, setAmbientVolume] = useState(loadAmbientVolume);
+  const [ambientError, setAmbientError] = useState('');
+  const [backupStatus, setBackupStatus] = useState('');
+  const [backupReloadPending, setBackupReloadPending] = useState(false);
   const [activityEvents, setActivityEvents] = useState<ActivityEvent[]>(loadActivityEvents);
   const [goals, setGoals] = useState<ProductivityGoals>(loadProductivityGoals);
   const [tempGoals, setTempGoals] = useState<ProductivityGoals>(goals);
@@ -476,6 +747,8 @@ export default function App() {
   const intervalRef = useRef<number | null>(null);
   const deadlineRef = useRef<number | null>(savedTimer?.deadline || null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const ambientPlayerRef = useRef<AmbientPlayer | null>(null);
+  const backupFileInputRef = useRef<HTMLInputElement | null>(null);
   const t = translations[language];
   const logActivity = (event: Omit<ActivityEvent, 'id' | 'timestamp'>) => {
     recordActivity(event);
@@ -518,6 +791,45 @@ export default function App() {
     (best, day) => day.focusMinutes > (best?.focusMinutes || 0) ? day : best,
     null,
   );
+  const focusDayKeys = getFocusDayKeys(activityEvents);
+  const streaks = getStreakSummary(focusDayKeys);
+  const focusMinutesByDay = new Map<string, number>();
+  activityEvents
+    .filter((event) => event.type === 'focus_completed')
+    .forEach((event) => {
+      const key = getDateKey(new Date(event.timestamp));
+      focusMinutesByDay.set(key, (focusMinutesByDay.get(key) || 0) + (event.minutes || 0));
+    });
+  const totalRecordedSessions = activityEvents.filter((event) => event.type === 'focus_completed').length;
+  const historicallyCompletedTasks = new Set(
+    activityEvents.filter((event) => event.type === 'task_completed' && event.taskId).map((event) => event.taskId as string),
+  ).size;
+  const calendarDaysInMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 0).getDate();
+  const calendarStartOffset = (new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1).getDay() + 6) % 7;
+  const calendarCellCount = calendarStartOffset + calendarDaysInMonth;
+  const calendarCells: (number | null)[] = [
+    ...Array.from({ length: calendarStartOffset }, () => null),
+    ...Array.from({ length: calendarDaysInMonth }, (_, index) => index + 1),
+    ...Array.from({ length: (7 - calendarCellCount % 7) % 7 }, () => null),
+  ];
+  const now = new Date();
+  const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const isCalendarAtCurrentMonth = calendarMonth.getTime() >= currentMonthStart.getTime();
+  const visiblePrayerCategories = prayerCategories
+    .map((category) => ({
+      ...category,
+      prayers: category.prayers
+        .map((prayer, index) => ({ ...prayer, id: `${category.id}-${index}` }))
+        .filter((prayer) => !showFavoritePrayers || favoritePrayerIds.includes(prayer.id)),
+    }))
+    .filter((category) => category.prayers.length > 0);
+  const achievements = [
+    { id: 'first-focus', icon: '🌱', title: t.firstFocusBadge, description: t.firstFocusBadgeHint, progress: Math.min(totalRecordedSessions, 1), target: 1 },
+    { id: 'ten-sessions', icon: '🍅', title: t.tenSessionsBadge, description: t.tenSessionsBadgeHint, progress: Math.min(totalRecordedSessions, 10), target: 10 },
+    { id: 'three-day-streak', icon: '🔥', title: t.threeDayStreakBadge, description: t.threeDayStreakBadgeHint, progress: Math.min(streaks.longest, 3), target: 3 },
+    { id: 'seven-days', icon: '📅', title: t.sevenStudyDaysBadge, description: t.sevenStudyDaysBadgeHint, progress: Math.min(focusDayKeys.size, 7), target: 7 },
+    { id: 'ten-tasks', icon: '✅', title: t.tenTasksBadge, description: t.tenTasksBadgeHint, progress: Math.min(historicallyCompletedTasks, 10), target: 10 },
+  ];
 
   useEffect(() => {
     document.documentElement.classList.remove('light', 'dark');
@@ -561,6 +873,28 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('pomodoro_productivity_goals', JSON.stringify(goals));
   }, [goals]);
+
+  useEffect(() => {
+    localStorage.setItem('pomodoro_favorite_prayers', JSON.stringify(favoritePrayerIds));
+  }, [favoritePrayerIds]);
+
+  useEffect(() => {
+    localStorage.setItem('pomodoro_ambient_volume', String(ambientVolume));
+    const player = ambientPlayerRef.current;
+    if (player) player.gain.gain.setTargetAtTime(ambientVolume, player.context.currentTime, 0.05);
+  }, [ambientVolume]);
+
+  useEffect(() => () => {
+    const player = ambientPlayerRef.current;
+    if (!player) return;
+    player.source.stop();
+    player.source.disconnect();
+    player.gain.disconnect();
+    if (player.context.state !== 'closed') {
+      player.context.close().catch((error: unknown) => console.error('Unable to close ambient audio context.', error));
+    }
+    ambientPlayerRef.current = null;
+  }, []);
 
   useEffect(() => {
     const state: SavedTimerState = {
@@ -776,6 +1110,148 @@ export default function App() {
     setShowSettings(true);
   };
 
+  const stopAmbientSound = () => {
+    const player = ambientPlayerRef.current;
+    ambientPlayerRef.current = null;
+    if (player) {
+      player.source.stop();
+      player.source.disconnect();
+      player.gain.disconnect();
+      if (player.context.state !== 'closed') {
+        player.context.close().catch((error: unknown) => {
+          console.error('Unable to close ambient audio context.', error);
+          setAmbientError(t.ambientStopError);
+        });
+      }
+    }
+    setAmbientSound(null);
+  };
+
+  const startAmbientSound = async (sound: AmbientSound) => {
+    stopAmbientSound();
+    setAmbientError('');
+    let context: AudioContext | null = null;
+    try {
+      if (typeof window.AudioContext !== 'function') throw new Error('Web Audio is not supported.');
+      context = new window.AudioContext();
+      await context.resume();
+      const durationSeconds = 3;
+      const buffer = context.createBuffer(1, context.sampleRate * durationSeconds, context.sampleRate);
+      const samples = buffer.getChannelData(0);
+      let brownNoise = 0;
+      let droplet = 0;
+      for (let index = 0; index < samples.length; index += 1) {
+        const whiteNoise = Math.random() * 2 - 1;
+        if (sound === 'rain') {
+          brownNoise = (brownNoise + 0.02 * whiteNoise) / 1.02;
+          if (Math.random() < 0.0007) droplet = 0.8;
+          droplet *= 0.996;
+          samples[index] = Math.max(-1, Math.min(1, brownNoise * 3.5 + whiteNoise * droplet * 0.25));
+        } else {
+          samples[index] = whiteNoise;
+        }
+      }
+      const fadeLength = Math.floor(context.sampleRate * 0.08);
+      for (let index = 0; index < fadeLength; index += 1) {
+        const mix = index / fadeLength;
+        const tailIndex = samples.length - fadeLength + index;
+        samples[tailIndex] = samples[tailIndex] * (1 - mix) + samples[index] * mix;
+      }
+
+      const source = context.createBufferSource();
+      const filter = context.createBiquadFilter();
+      const gain = context.createGain();
+      source.buffer = buffer;
+      source.loop = true;
+      filter.type = sound === 'rain' ? 'lowpass' : 'highpass';
+      filter.frequency.value = sound === 'rain' ? 3500 : 800;
+      gain.gain.value = ambientVolume;
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(context.destination);
+      source.start();
+      ambientPlayerRef.current = { context, source, gain };
+      setAmbientSound(sound);
+    } catch (error) {
+      if (context && context.state !== 'closed') {
+        context.close().catch((closeError: unknown) => console.error('Unable to close failed ambient audio context.', closeError));
+      }
+      console.error('Unable to start ambient audio.', error);
+      setAmbientError(t.ambientUnavailable);
+    }
+  };
+
+  const handleExportBackup = () => {
+    try {
+      const payload: BackupPayload = {
+        format: 'focus-to-work-backup',
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        data: getAppStorageData(),
+      };
+      const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `focus-to-work-backup-${getTodayKey()}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setBackupStatus(t.backupExportSuccess);
+      setBackupReloadPending(false);
+    } catch (error) {
+      console.error('Unable to export app data.', error);
+      setBackupStatus(t.backupExportError);
+    }
+  };
+
+  const handleImportBackup = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setBackupStatus('');
+    setBackupReloadPending(false);
+    try {
+      if (file.size > 10 * 1024 * 1024) throw new Error(t.backupFileTooLarge);
+      const payload = validateBackup(JSON.parse(await file.text()));
+      if (!window.confirm(t.backupConfirm)) return;
+
+      const previousData = getAppStorageData();
+      try {
+        Object.keys(previousData).forEach((key) => localStorage.removeItem(key));
+        Object.entries(payload.data).forEach(([key, value]) => localStorage.setItem(key, value));
+      } catch (error) {
+        try {
+          Object.keys(getAppStorageData()).forEach((key) => localStorage.removeItem(key));
+          Object.entries(previousData).forEach(([key, value]) => localStorage.setItem(key, value));
+        } catch (rollbackError) {
+          console.error('Unable to restore app data after a failed backup import.', rollbackError);
+          throw new Error(t.backupRollbackError);
+        }
+        throw new Error(t.backupImportError);
+      }
+
+      setBackupStatus(t.backupImportSuccess);
+      setBackupReloadPending(true);
+    } catch (error) {
+      console.error('Unable to import app data.', error);
+      const message = error instanceof Error ? error.message : '';
+      const knownMessages: string[] = [t.backupFileTooLarge, t.backupRollbackError, t.backupImportError];
+      setBackupStatus(
+        knownMessages.includes(message)
+          ? message
+          : t.backupInvalid,
+      );
+    } finally {
+      event.target.value = '';
+    }
+  };
+
+  const toggleFavoritePrayer = (id: string) => {
+    setFavoritePrayerIds((current) =>
+      current.includes(id) ? current.filter((favorite) => favorite !== id) : [...current, id],
+    );
+  };
+
   const addTodo = () => {
     if (!newTodo.trim()) return;
     const task = { id: `${Date.now()}-${Math.random()}`, text: newTodo.trim(), completed: false };
@@ -887,7 +1363,36 @@ export default function App() {
             className="theme-toggle w-10 h-10 rounded-full border flex items-center justify-center"
             aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
           >
-            {theme === 'dark' ? '☀️' : '🌙'}
+            {theme === 'dark' ? (
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42" />
+              </svg>
+            ) : (
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              </svg>
+            )}
           </button>
         </div>
       </div>
@@ -924,6 +1429,15 @@ export default function App() {
           className={`px-5 py-2 rounded-lg text-sm font-medium ${view === 'prayers' ? 'bg-gray-800 text-white' : 'text-gray-600'}`}
         >
           {t.prayers}
+        </button>
+        <button
+          onClick={() => {
+            stopAmbientSound();
+            setView('quran');
+          }}
+          className={`px-5 py-2 rounded-lg text-sm font-medium ${view === 'quran' ? 'bg-gray-800 text-white' : 'text-gray-600'}`}
+        >
+          {t.quran}
         </button>
       </div>
 
@@ -1023,6 +1537,57 @@ export default function App() {
           </span>
         </button>
       </div>
+
+      <section className="ambient-panel w-full max-w-md rounded-xl border border-gray-100 bg-white p-4 shadow-sm mb-6">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div>
+            <h2 className="text-sm font-bold text-gray-800">🎧 {t.focusSounds}</h2>
+            <p className="text-xs text-gray-500 mt-1">{t.soundHint}</p>
+          </div>
+          {ambientSound && <span className="ambient-playing text-xs font-semibold">{t.soundPlaying}</span>}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            aria-pressed={ambientSound === 'rain'}
+            onClick={() => ambientSound === 'rain' ? stopAmbientSound() : void startAmbientSound('rain')}
+            className={`ambient-button px-3 py-2 rounded-lg text-sm ${ambientSound === 'rain' ? 'is-active' : ''}`}
+          >
+            🌧️ {t.rainSound}
+          </button>
+          <button
+            type="button"
+            aria-pressed={ambientSound === 'white-noise'}
+            onClick={() => ambientSound === 'white-noise' ? stopAmbientSound() : void startAmbientSound('white-noise')}
+            className={`ambient-button px-3 py-2 rounded-lg text-sm ${ambientSound === 'white-noise' ? 'is-active' : ''}`}
+          >
+            🌫️ {t.whiteNoise}
+          </button>
+          <button
+            type="button"
+            onClick={stopAmbientSound}
+            disabled={!ambientSound}
+            className="ambient-stop-button px-3 py-2 rounded-lg text-sm"
+          >
+            {t.stopSound}
+          </button>
+        </div>
+        <label className="ambient-volume-label flex items-center gap-3 text-xs text-gray-500 mt-4">
+          <span>{t.soundVolume}</span>
+          <input
+            type="range"
+            min="0"
+            max="0.3"
+            step="0.01"
+            value={ambientVolume}
+            onChange={(event) => setAmbientVolume(Number(event.target.value))}
+            className="flex-1 accent-red-500"
+            aria-label={t.soundVolume}
+          />
+          <span className="min-w-9 text-right">{Math.round(ambientVolume * 100)}%</span>
+        </label>
+        {ambientError && <p role="alert" className="text-sm text-red-500 mt-2">{ambientError}</p>}
+      </section>
 
       {plannedSession?.isActive && (
         <div className="w-full max-w-md bg-white rounded-xl p-4 shadow-sm border border-gray-100 mb-6">
@@ -1343,6 +1908,144 @@ export default function App() {
               </div>
             </>
           )}
+          <section className="study-calendar-panel mt-6 rounded-xl border border-gray-100 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <h3 className="text-base font-bold text-gray-800">📅 {t.studyCalendar}</h3>
+              <div className="streak-summary flex gap-2">
+                <div className="streak-chip">
+                  <span>{t.currentStreak}</span>
+                  <strong>{streaks.current} {t.days}</strong>
+                </div>
+                <div className="streak-chip">
+                  <span>{t.bestStreak}</span>
+                  <strong>{streaks.longest} {t.days}</strong>
+                </div>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500 mb-3">{t.calendarHistoryNote}</p>
+            <div className="flex items-center justify-between mb-3">
+              <button
+                type="button"
+                onClick={() => setCalendarMonth((month) => new Date(month.getFullYear(), month.getMonth() - 1, 1))}
+                aria-label={t.previousMonth}
+                className="calendar-month-button w-9 h-9 rounded-lg border"
+              >
+                ‹
+              </button>
+              <h4 className="font-semibold text-gray-800">
+                {calendarMonth.toLocaleDateString(language === 'ar' ? 'ar-EG' : 'en-US', { month: 'long', year: 'numeric' })}
+              </h4>
+              <button
+                type="button"
+                onClick={() => setCalendarMonth((month) => new Date(month.getFullYear(), month.getMonth() + 1, 1))}
+                aria-label={t.nextMonth}
+                disabled={isCalendarAtCurrentMonth}
+                className="calendar-month-button w-9 h-9 rounded-lg border"
+              >
+                ›
+              </button>
+            </div>
+            <div className="activity-calendar-grid mb-2">
+              {Array.from({ length: 7 }, (_, index) => (
+                <span key={`weekday-${index}`} className="activity-calendar-weekday">
+                  {new Date(2024, 0, index + 1).toLocaleDateString(language === 'ar' ? 'ar-EG' : 'en-US', { weekday: 'short' })}
+                </span>
+              ))}
+              {calendarCells.map((day, index) => {
+                if (day === null) return <span key={`empty-${index}`} className="activity-calendar-empty" />;
+                const date = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), day);
+                const dateKey = getDateKey(date);
+                const focusMinutes = focusMinutesByDay.get(dateKey) || 0;
+                const level = focusMinutes >= goals.dailyFocusMinutes
+                  ? 4
+                  : focusMinutes >= goals.dailyFocusMinutes * 0.75
+                    ? 3
+                    : focusMinutes >= goals.dailyFocusMinutes * 0.5
+                      ? 2
+                      : focusMinutes > 0 ? 1 : 0;
+                const label = date.toLocaleDateString(language === 'ar' ? 'ar-EG' : 'en-US', {
+                  weekday: 'long',
+                  month: 'long',
+                  day: 'numeric',
+                });
+                return (
+                  <div
+                    key={dateKey}
+                    className={`activity-calendar-day level-${level} ${dateKey === getTodayKey() ? 'is-today' : ''} ${dateKey > getTodayKey() ? 'is-future' : ''}`}
+                    title={`${label}: ${focusMinutes ? formatDuration(focusMinutes) : t.noStudy}`}
+                    aria-label={`${label}: ${focusMinutes ? formatDuration(focusMinutes) : t.noStudy}`}
+                  >
+                    {day}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="calendar-legend flex flex-wrap items-center justify-end gap-2 text-xs text-gray-500">
+              <span>{t.noStudy}</span>
+              <span className="activity-calendar-day level-0" />
+              <span className="activity-calendar-day level-1" />
+              <span className="activity-calendar-day level-2" />
+              <span className="activity-calendar-day level-3" />
+              <span className="activity-calendar-day level-4" />
+              <span>{t.goalReached}</span>
+            </div>
+          </section>
+
+          <section className="achievements-panel mt-6">
+            <h3 className="text-base font-bold text-gray-800 mb-3">🏆 {t.achievements}</h3>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {achievements.map((achievement) => {
+                const unlocked = achievement.progress >= achievement.target;
+                return (
+                  <article key={achievement.id} className={`achievement-card rounded-xl border p-3 ${unlocked ? 'is-unlocked' : ''}`}>
+                    <div className="flex items-start gap-3">
+                      <span className="achievement-icon text-2xl" aria-hidden="true">{achievement.icon}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <h4 className="font-semibold text-gray-800">{achievement.title}</h4>
+                          <span className={`achievement-status text-xs ${unlocked ? 'is-unlocked' : ''}`}>
+                            {unlocked ? t.achievementUnlocked : t.achievementLocked}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-1">{achievement.description}</p>
+                        <div className="achievement-progress-track mt-2 h-1.5 rounded-full overflow-hidden">
+                          <span style={{ width: `${achievement.progress / achievement.target * 100}%` }} />
+                        </div>
+                        <p className="text-xs text-gray-400 mt-1">{achievement.progress}/{achievement.target}</p>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className="backup-panel mt-6 rounded-xl border border-gray-100 p-4">
+            <h3 className="text-base font-bold text-gray-800">💾 {t.dataBackup}</h3>
+            <p className="text-sm text-gray-500 mt-1 mb-3">{t.backupHint}</p>
+            <input
+              ref={backupFileInputRef}
+              type="file"
+              accept=".json,application/json"
+              onChange={handleImportBackup}
+              className="sr-only"
+              aria-label={t.importBackup}
+            />
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={handleExportBackup} className="backup-action-button px-3 py-2 rounded-lg text-sm font-medium">
+                {t.exportBackup}
+              </button>
+              <button type="button" onClick={() => backupFileInputRef.current?.click()} className="backup-action-button px-3 py-2 rounded-lg text-sm font-medium">
+                {t.importBackup}
+              </button>
+              {backupReloadPending && (
+                <button type="button" onClick={() => window.location.reload()} className="backup-reload-button px-3 py-2 rounded-lg text-sm font-semibold">
+                  {t.reloadApp}
+                </button>
+              )}
+            </div>
+            {backupStatus && <p role="status" className={`text-sm mt-3 ${backupReloadPending ? 'text-emerald-600' : 'text-gray-500'}`}>{backupStatus}</p>}
+          </section>
         </section>
       )}
 
@@ -1361,6 +2064,14 @@ export default function App() {
             >
               {t.allPrayers}
             </button>
+            <button
+              type="button"
+              onClick={() => setShowFavoritePrayers((current) => !current)}
+              aria-pressed={showFavoritePrayers}
+              className={`prayer-category-button px-3 py-2 rounded-lg text-sm ${showFavoritePrayers ? 'is-active' : ''}`}
+            >
+              ★ {t.favoritePrayers}
+            </button>
             {prayerCategories.map((category) => (
               <button
                 key={category.id}
@@ -1374,19 +2085,32 @@ export default function App() {
             ))}
           </div>
           <div className="space-y-6">
-            {prayerCategories
+            {visiblePrayerCategories
               .filter((category) => prayerFilter === 'all' || prayerFilter === category.id)
               .map((category) => (
                 <section key={category.id}>
                   <h3 className="text-base font-bold text-gray-800 mb-3">
-                  {category.title[language]}
+                    {category.title[language]}
                   </h3>
                   <div className="grid gap-3 sm:grid-cols-2">
-                    {category.prayers.map((prayer, index) => (
-                      <article key={`${category.id}-${index}`} className="prayer-card rounded-xl border border-gray-100 p-4">
-                        <p lang="ar" dir="rtl" className="prayer-text text-right text-xl leading-loose font-medium">
-                          {prayer.arabic}
-                        </p>
+                    {category.prayers.map((prayer) => {
+                      const isFavorite = favoritePrayerIds.includes(prayer.id);
+                      return (
+                      <article key={prayer.id} className="prayer-card rounded-xl border border-gray-100 p-4">
+                        <div className="flex items-start gap-2">
+                          <p lang="ar" dir="rtl" className="prayer-text flex-1 text-right text-xl leading-loose font-medium">
+                            {prayer.arabic}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => toggleFavoritePrayer(prayer.id)}
+                            aria-label={isFavorite ? t.removeFavorite : t.addFavorite}
+                            aria-pressed={isFavorite}
+                            className={`prayer-favorite-button w-9 h-9 rounded-lg text-xl ${isFavorite ? 'is-active' : ''}`}
+                          >
+                            {isFavorite ? '★' : '☆'}
+                          </button>
+                        </div>
                         {language === 'en' && (
                           <p lang="en" dir="ltr" className="prayer-translation text-sm text-gray-600 mt-2">
                             {prayer.english}
@@ -1396,13 +2120,24 @@ export default function App() {
                           {prayer.source[language]}
                         </p>
                       </article>
-                    ))}
+                    );
+                    })}
                   </div>
                 </section>
               ))}
+            {visiblePrayerCategories.filter((category) => prayerFilter === 'all' || prayerFilter === category.id).length === 0 && (
+              <p className="text-center text-gray-500 py-8">{t.noFavoritePrayers}</p>
+            )}
           </div>
         </section>
       )}
+
+      <QuranLibrary
+        language={language}
+        isActive={view === 'quran'}
+        onPlaybackStart={stopAmbientSound}
+        onOpenLibrary={() => setView('quran')}
+      />
 
       {/* Settings Modal */}
       {showSettings && (

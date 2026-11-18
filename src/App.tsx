@@ -119,24 +119,24 @@ function loadTodos(): TodoTask[] {
   } catch {
     return [];
   }
+}
 
-  function loadSavedTimerState(): SavedTimerState | null {
-    try {
-      const saved = JSON.parse(localStorage.getItem('pomodoro_timer_state') || 'null');
-      return saved && typeof saved === 'object' ? saved as SavedTimerState : null;
-    } catch {
-      return null;
-    }
+function loadSavedTimerState(): SavedTimerState | null {
+  try {
+    const saved = JSON.parse(localStorage.getItem('pomodoro_timer_state') || 'null');
+    return saved && typeof saved === 'object' ? saved as SavedTimerState : null;
+  } catch {
+    return null;
   }
+}
 
-  function formatDuration(minutes: number): string {
-    const rounded = Math.round(minutes * 2) / 2;
-    const hours = Math.floor(rounded);
-    const remainingMinutes = Math.round((rounded - hours) * 60);
-    if (hours && remainingMinutes) return `${hours}h ${remainingMinutes}m`;
-    if (hours) return `${hours}h`;
-    return `${remainingMinutes}m`;
-  }
+function formatDuration(minutes: number): string {
+  const rounded = Math.round(minutes);
+  const hours = Math.floor(rounded / 60);
+  const remainingMinutes = rounded % 60;
+  if (hours && remainingMinutes) return `${hours}h ${remainingMinutes}m`;
+  if (hours) return `${hours}h`;
+  return `${remainingMinutes}m`;
 }
 
 function formatTime(seconds: number): string {

@@ -1,7 +1,7 @@
 export const translations = {
   en: {
-    title: 'Pomodoro Focus',
-    subtitle: 'Stay focused, take breaks, be productive',
+    title: 'Focus To Work',
+    subtitle: 'Focus better. Achieve more.',
     timer: 'Timer',
     planner: 'Session Planner',
     reports: 'Reports',
@@ -64,8 +64,8 @@ export const translations = {
     dataSaved: 'Data saved locally',
   },
   ar: {
-    title: 'بومودورو فوكس',
-    subtitle: 'ركز، خد بريك، كن منتج',
+    title: 'Focus To Work',
+    subtitle: 'ركّز بذكاء، وأنجز أكثر.',
     timer: 'المؤقت',
     planner: 'مخطط الجلسات',
     reports: 'التقارير',

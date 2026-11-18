@@ -349,39 +349,45 @@ button:active {
   color: #ffffff;
 }
 
-.ambient-panel {
-  background: #ffffff;
+.quran-shortcut {
+  border-color: #e3e9e1;
+  background: linear-gradient(120deg, #f8faf6, #edf4ed);
 }
 
-.ambient-button,
-.ambient-stop-button {
-  background: #f3f4f6;
-  color: #374151;
+.quran-shortcut h2 {
+  color: #173b31;
 }
 
-.ambient-button:hover:not(.is-active),
-.ambient-stop-button:hover:not(:disabled) {
-  background: #e5e7eb;
+.quran-shortcut p {
+  color: #64746a;
 }
 
-.ambient-button.is-active {
-  background: #ef4444;
-  color: #ffffff;
+.quran-shortcut-icon {
+  display: grid;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 0.8rem;
+  color: #e4d094;
+  background: #173b31;
+  font-size: 1.4rem;
 }
 
-.ambient-stop-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
+.quran-shortcut-button {
+  flex: 0 0 auto;
+  padding: 0.65rem 0.8rem;
+  border-radius: 0.7rem;
+  color: #fffdf2;
+  background: #173b31;
+  font-size: 0.76rem;
+  font-weight: 700;
+  transition: background 0.2s ease, transform 0.2s ease;
 }
 
-.ambient-playing {
-  color: #059669;
-}
-
-.ambient-volume-label input[type="range"] {
-  background: transparent;
-  border: 0;
-  box-shadow: none;
+.quran-shortcut-button:hover {
+  transform: translateY(-1px);
+  background: #245342;
 }
 
 .quran-library {
@@ -1301,6 +1307,21 @@ button:active {
   box-shadow: 0 18px 48px rgba(10, 28, 22, 0.34);
 }
 
+.quran-mini-drag-handle {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 0.65rem;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.quran-mini-drag-handle:active {
+  cursor: grabbing;
+}
+
 .quran-mini-player-heading {
   display: flex;
   min-width: 0;
@@ -1354,6 +1375,7 @@ button:active {
 }
 
 .quran-mini-open,
+.quran-mini-float,
 .quran-mini-favorite {
   display: grid;
   flex: 0 0 32px;
@@ -1366,6 +1388,7 @@ button:active {
 }
 
 .quran-mini-open:hover,
+.quran-mini-float:hover,
 .quran-mini-favorite:hover,
 .quran-mini-favorite.is-active {
   color: #f0d98f;
@@ -1737,29 +1760,17 @@ button:active {
   background: #4b5563;
 }
 
-.app-shell.dark .ambient-panel {
-  background: #1f2937;
-  border-color: #374151;
+.app-shell.dark .quran-shortcut {
+  border-color: #394b42;
+  background: linear-gradient(120deg, #1d3028, #17241f);
 }
 
-.app-shell.dark .ambient-button,
-.app-shell.dark .ambient-stop-button {
-  background: #374151;
-  color: #e5e7eb;
+.app-shell.dark .quran-shortcut h2 {
+  color: #f0ead4;
 }
 
-.app-shell.dark .ambient-button.is-active {
-  background: #ef4444;
-  color: #ffffff;
-}
-
-.app-shell.dark .ambient-button:hover:not(.is-active),
-.app-shell.dark .ambient-stop-button:hover:not(:disabled) {
-  background: #4b5563;
-}
-
-.app-shell.dark .ambient-playing {
-  color: #6ee7b7;
+.app-shell.dark .quran-shortcut p {
+  color: #b6c4b8;
 }
 
 .app-shell.dark .quran-library {

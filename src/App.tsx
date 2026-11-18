@@ -8,13 +8,6 @@ type Theme = 'light' | 'dark';
 type View = 'timer' | 'planner' | 'reports' | 'prayers' | 'quran';
 type ReportPeriod = 'week' | 'month';
 type PrayerCategoryId = 'study' | 'exam' | 'ease' | 'forgiveness' | 'after';
-type AmbientSound = 'rain' | 'white-noise';
-
-interface AmbientPlayer {
-  context: AudioContext;
-  source: AudioBufferSourceNode;
-  gain: GainNode;
-}
 
 interface BackupPayload {
   format: 'focus-to-work-backup';
@@ -358,13 +351,6 @@ function loadFavoritePrayerIds(): string[] {
   } catch {
     return [];
   }
-}
-
-function loadAmbientVolume(): number {
-  const raw = localStorage.getItem('pomodoro_ambient_volume');
-  if (raw === null) return 0.12;
-  const saved = Number(raw);
-  return Number.isFinite(saved) ? Math.min(0.3, Math.max(0, saved)) : 0.12;
 }
 
 function loadSavedTimerState(): SavedTimerState | null {
@@ -734,9 +720,6 @@ export default function App() {
   const [prayerFilter, setPrayerFilter] = useState<PrayerCategoryId | 'all'>('all');
   const [showFavoritePrayers, setShowFavoritePrayers] = useState(false);
   const [favoritePrayerIds, setFavoritePrayerIds] = useState<string[]>(loadFavoritePrayerIds);
-  const [ambientSound, setAmbientSound] = useState<AmbientSound | null>(null);
-  const [ambientVolume, setAmbientVolume] = useState(loadAmbientVolume);
-  const [ambientError, setAmbientError] = useState('');
   const [backupStatus, setBackupStatus] = useState('');
   const [backupReloadPending, setBackupReloadPending] = useState(false);
   const [activityEvents, setActivityEvents] = useState<ActivityEvent[]>(loadActivityEvents);
@@ -747,7 +730,6 @@ export default function App() {
   const intervalRef = useRef<number | null>(null);
   const deadlineRef = useRef<number | null>(savedTimer?.deadline || null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const ambientPlayerRef = useRef<AmbientPlayer | null>(null);
   const backupFileInputRef = useRef<HTMLInputElement | null>(null);
   const t = translations[language];
   const logActivity = (event: Omit<ActivityEvent, 'id' | 'timestamp'>) => {
@@ -877,24 +859,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('pomodoro_favorite_prayers', JSON.stringify(favoritePrayerIds));
   }, [favoritePrayerIds]);
-
-  useEffect(() => {
-    localStorage.setItem('pomodoro_ambient_volume', String(ambientVolume));
-    const player = ambientPlayerRef.current;
-    if (player) player.gain.gain.setTargetAtTime(ambientVolume, player.context.currentTime, 0.05);
-  }, [ambientVolume]);
-
-  useEffect(() => () => {
-    const player = ambientPlayerRef.current;
-    if (!player) return;
-    player.source.stop();
-    player.source.disconnect();
-    player.gain.disconnect();
-    if (player.context.state !== 'closed') {
-      player.context.close().catch((error: unknown) => console.error('Unable to close ambient audio context.', error));
-    }
-    ambientPlayerRef.current = null;
-  }, []);
 
   useEffect(() => {
     const state: SavedTimerState = {
@@ -1108,77 +1072,6 @@ export default function App() {
     setTempSettings(settings);
     setTempGoals(goals);
     setShowSettings(true);
-  };
-
-  const stopAmbientSound = () => {
-    const player = ambientPlayerRef.current;
-    ambientPlayerRef.current = null;
-    if (player) {
-      player.source.stop();
-      player.source.disconnect();
-      player.gain.disconnect();
-      if (player.context.state !== 'closed') {
-        player.context.close().catch((error: unknown) => {
-          console.error('Unable to close ambient audio context.', error);
-          setAmbientError(t.ambientStopError);
-        });
-      }
-    }
-    setAmbientSound(null);
-  };
-
-  const startAmbientSound = async (sound: AmbientSound) => {
-    stopAmbientSound();
-    setAmbientError('');
-    let context: AudioContext | null = null;
-    try {
-      if (typeof window.AudioContext !== 'function') throw new Error('Web Audio is not supported.');
-      context = new window.AudioContext();
-      await context.resume();
-      const durationSeconds = 3;
-      const buffer = context.createBuffer(1, context.sampleRate * durationSeconds, context.sampleRate);
-      const samples = buffer.getChannelData(0);
-      let brownNoise = 0;
-      let droplet = 0;
-      for (let index = 0; index < samples.length; index += 1) {
-        const whiteNoise = Math.random() * 2 - 1;
-        if (sound === 'rain') {
-          brownNoise = (brownNoise + 0.02 * whiteNoise) / 1.02;
-          if (Math.random() < 0.0007) droplet = 0.8;
-          droplet *= 0.996;
-          samples[index] = Math.max(-1, Math.min(1, brownNoise * 3.5 + whiteNoise * droplet * 0.25));
-        } else {
-          samples[index] = whiteNoise;
-        }
-      }
-      const fadeLength = Math.floor(context.sampleRate * 0.08);
-      for (let index = 0; index < fadeLength; index += 1) {
-        const mix = index / fadeLength;
-        const tailIndex = samples.length - fadeLength + index;
-        samples[tailIndex] = samples[tailIndex] * (1 - mix) + samples[index] * mix;
-      }
-
-      const source = context.createBufferSource();
-      const filter = context.createBiquadFilter();
-      const gain = context.createGain();
-      source.buffer = buffer;
-      source.loop = true;
-      filter.type = sound === 'rain' ? 'lowpass' : 'highpass';
-      filter.frequency.value = sound === 'rain' ? 3500 : 800;
-      gain.gain.value = ambientVolume;
-      source.connect(filter);
-      filter.connect(gain);
-      gain.connect(context.destination);
-      source.start();
-      ambientPlayerRef.current = { context, source, gain };
-      setAmbientSound(sound);
-    } catch (error) {
-      if (context && context.state !== 'closed') {
-        context.close().catch((closeError: unknown) => console.error('Unable to close failed ambient audio context.', closeError));
-      }
-      console.error('Unable to start ambient audio.', error);
-      setAmbientError(t.ambientUnavailable);
-    }
   };
 
   const handleExportBackup = () => {
@@ -1431,10 +1324,7 @@ export default function App() {
           {t.prayers}
         </button>
         <button
-          onClick={() => {
-            stopAmbientSound();
-            setView('quran');
-          }}
+          onClick={() => setView('quran')}
           className={`px-5 py-2 rounded-lg text-sm font-medium ${view === 'quran' ? 'bg-gray-800 text-white' : 'text-gray-600'}`}
         >
           {t.quran}
@@ -1538,55 +1428,21 @@ export default function App() {
         </button>
       </div>
 
-      <section className="ambient-panel w-full max-w-md rounded-xl border border-gray-100 bg-white p-4 shadow-sm mb-6">
-        <div className="flex items-start justify-between gap-3 mb-3">
-          <div>
-            <h2 className="text-sm font-bold text-gray-800">🎧 {t.focusSounds}</h2>
-            <p className="text-xs text-gray-500 mt-1">{t.soundHint}</p>
+      <section className="quran-shortcut w-full max-w-md rounded-xl border p-4 shadow-sm mb-6">
+        <div className="flex items-center gap-3">
+          <span className="quran-shortcut-icon" aria-hidden="true">۞</span>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-bold">{t.quranShortcutTitle}</h2>
+            <p className="text-xs mt-1">{t.quranShortcutHint}</p>
           </div>
-          {ambientSound && <span className="ambient-playing text-xs font-semibold">{t.soundPlaying}</span>}
-        </div>
-        <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            aria-pressed={ambientSound === 'rain'}
-            onClick={() => ambientSound === 'rain' ? stopAmbientSound() : void startAmbientSound('rain')}
-            className={`ambient-button px-3 py-2 rounded-lg text-sm ${ambientSound === 'rain' ? 'is-active' : ''}`}
+            className="quran-shortcut-button"
+            onClick={() => setView('quran')}
           >
-            🌧️ {t.rainSound}
-          </button>
-          <button
-            type="button"
-            aria-pressed={ambientSound === 'white-noise'}
-            onClick={() => ambientSound === 'white-noise' ? stopAmbientSound() : void startAmbientSound('white-noise')}
-            className={`ambient-button px-3 py-2 rounded-lg text-sm ${ambientSound === 'white-noise' ? 'is-active' : ''}`}
-          >
-            🌫️ {t.whiteNoise}
-          </button>
-          <button
-            type="button"
-            onClick={stopAmbientSound}
-            disabled={!ambientSound}
-            className="ambient-stop-button px-3 py-2 rounded-lg text-sm"
-          >
-            {t.stopSound}
+            {t.quranShortcutAction}
           </button>
         </div>
-        <label className="ambient-volume-label flex items-center gap-3 text-xs text-gray-500 mt-4">
-          <span>{t.soundVolume}</span>
-          <input
-            type="range"
-            min="0"
-            max="0.3"
-            step="0.01"
-            value={ambientVolume}
-            onChange={(event) => setAmbientVolume(Number(event.target.value))}
-            className="flex-1 accent-red-500"
-            aria-label={t.soundVolume}
-          />
-          <span className="min-w-9 text-right">{Math.round(ambientVolume * 100)}%</span>
-        </label>
-        {ambientError && <p role="alert" className="text-sm text-red-500 mt-2">{ambientError}</p>}
       </section>
 
       {plannedSession?.isActive && (
@@ -2135,7 +1991,6 @@ export default function App() {
       <QuranLibrary
         language={language}
         isActive={view === 'quran'}
-        onPlaybackStart={stopAmbientSound}
         onOpenLibrary={() => setView('quran')}
       />
 

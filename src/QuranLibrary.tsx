@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { createPortal } from 'react-dom';
 import {
   BookOpen,
   ExternalLink,
@@ -205,11 +206,22 @@ function formatTime(seconds: number): string {
 interface QuranLibraryProps {
   language: Language;
   isActive: boolean;
-  onPlaybackStart: () => void;
   onOpenLibrary: () => void;
 }
 
-export default function QuranLibrary({ language, isActive, onPlaybackStart, onOpenLibrary }: QuranLibraryProps) {
+interface MiniPlayerDrag {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  startLeft: number;
+  startTop: number;
+}
+
+interface DocumentPictureInPictureApi {
+  requestWindow: (options: { width: number; height: number }) => Promise<Window>;
+}
+
+export default function QuranLibrary({ language, isActive, onOpenLibrary }: QuranLibraryProps) {
   const t = translations[language];
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [savedPreferences] = useState(loadQuranPreferences);
@@ -234,10 +246,15 @@ export default function QuranLibrary({ language, isActive, onPlaybackStart, onOp
   const [resumeAvailable, setResumeAvailable] = useState(savedPreferences.currentTime > 0);
   const [isFavoritesOpen, setIsFavoritesOpen] = useState(false);
   const [isReciterSearchOpen, setIsReciterSearchOpen] = useState(false);
+  const [floatingPlayer, setFloatingPlayer] = useState<{ window: Window; container: HTMLDivElement } | null>(null);
+  const [floatingError, setFloatingError] = useState('');
+  const [miniPlayerPosition, setMiniPlayerPosition] = useState<{ left: number; top: number } | null>(null);
   const preferencesRef = useRef<QuranPreferences>(savedPreferences);
   const restorePositionRef = useRef<number | null>(savedPreferences.currentTime > 0 ? savedPreferences.currentTime : null);
   const continueAfterTrackChangeRef = useRef(false);
   const lastSavedPositionRef = useRef(savedPreferences.currentTime);
+  const miniPlayerRef = useRef<HTMLElement | null>(null);
+  const miniPlayerDragRef = useRef<MiniPlayerDrag | null>(null);
   const audioTrackRef = useRef<{ key: string; url: string } | null>(null);
   const favoritesPanelRef = useRef<HTMLElement | null>(null);
   const favoritesTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -401,6 +418,16 @@ export default function QuranLibrary({ language, isActive, onPlaybackStart, onOp
   }, []);
 
   useEffect(() => {
+    if (!isPlaying) return;
+    const confirmBeforeLeaving = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', confirmBeforeLeaving);
+    return () => window.removeEventListener('beforeunload', confirmBeforeLeaving);
+  }, [isPlaying]);
+
+  useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
     audio.pause();
@@ -437,7 +464,6 @@ export default function QuranLibrary({ language, isActive, onPlaybackStart, onOp
 
   const startPlayback = async (audio = audioRef.current) => {
     if (!audio || !audioUrl) return;
-    onPlaybackStart();
     setHasPlayed(true);
     preferencesRef.current.hasPlayed = true;
     preferencesRef.current.wasPlaying = true;
@@ -580,9 +606,204 @@ export default function QuranLibrary({ language, isActive, onPlaybackStart, onOp
     void startPlayback();
   };
 
+  const handleToggleFloatingPlayer = async () => {
+    if (floatingPlayer) {
+      floatingPlayer.window.close();
+      setFloatingPlayer(null);
+      return;
+    }
+
+    const pictureInPicture = (window as Window & {
+      documentPictureInPicture?: DocumentPictureInPictureApi;
+    }).documentPictureInPicture;
+    if (!pictureInPicture) {
+      setFloatingError(t.quranFloatUnavailable);
+      return;
+    }
+
+    setFloatingError('');
+    let pipWindow: Window | null = null;
+    try {
+      pipWindow = await pictureInPicture.requestWindow({ width: 420, height: 300 });
+      const pipDocument = pipWindow.document;
+      pipDocument.title = t.quranMiniPlayer;
+      pipDocument.documentElement.lang = language;
+      pipDocument.documentElement.dir = language === 'ar' ? 'rtl' : 'ltr';
+      pipDocument.body.style.margin = '0';
+      pipDocument.body.style.background = '#102d28';
+
+      document.querySelectorAll('style, link[rel="stylesheet"]').forEach((styleNode) => {
+        pipDocument.head.appendChild(styleNode.cloneNode(true));
+      });
+
+      const pipStyle = pipDocument.createElement('style');
+      pipStyle.textContent = '.quran-pip-root{box-sizing:border-box;min-height:100vh;padding:12px;background:#102d28}.quran-pip-root *{box-sizing:border-box}';
+      pipDocument.head.appendChild(pipStyle);
+
+      const container = pipDocument.createElement('div');
+      pipDocument.body.appendChild(container);
+      pipWindow.addEventListener('pagehide', () => {
+        setFloatingPlayer((current) => current?.window === pipWindow ? null : current);
+      }, { once: true });
+      setFloatingPlayer({ window: pipWindow, container });
+    } catch (error) {
+      if (pipWindow && !pipWindow.closed) pipWindow.close();
+      console.error('Unable to open the Quran floating player.', error);
+      setFloatingError(t.quranFloatError);
+    }
+  };
+
+  const handleMiniPlayerPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !miniPlayerRef.current) return;
+    const bounds = miniPlayerRef.current.getBoundingClientRect();
+    miniPlayerDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startLeft: bounds.left,
+      startTop: bounds.top,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleMiniPlayerPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = miniPlayerDragRef.current;
+    const player = miniPlayerRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || !player) return;
+    const bounds = player.getBoundingClientRect();
+    const maxLeft = Math.max(8, window.innerWidth - bounds.width - 8);
+    const maxTop = Math.max(8, window.innerHeight - bounds.height - 8);
+    setMiniPlayerPosition({
+      left: Math.min(maxLeft, Math.max(8, drag.startLeft + event.clientX - drag.startX)),
+      top: Math.min(maxTop, Math.max(8, drag.startTop + event.clientY - drag.startY)),
+    });
+  };
+
+  const handleMiniPlayerPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (miniPlayerDragRef.current?.pointerId !== event.pointerId) return;
+    miniPlayerDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
   const favoriteReciters = reciters.filter((reciter) => favoriteReciterIds.includes(reciter.id));
   const favoriteSurahs = (visibleCatalog?.surahs || []).filter((surah) => favoriteSurahIds.includes(surah.id));
   const showMiniPlayer = !isActive && hasPlayed;
+  const miniPlayerContent = (
+    <aside
+      ref={miniPlayerRef}
+      className="quran-mini-player"
+      aria-label={t.quranMiniPlayer}
+      style={floatingPlayer
+        ? { position: 'relative', left: 'auto', bottom: 'auto', transform: 'none', width: '100%' }
+        : miniPlayerPosition
+          ? { left: `${miniPlayerPosition.left}px`, top: `${miniPlayerPosition.top}px`, bottom: 'auto', transform: 'none' }
+          : undefined}
+    >
+      <div className="quran-mini-player-heading">
+        <div
+          className="quran-mini-drag-handle"
+          title={t.quranDragPlayer}
+          onPointerDown={floatingPlayer ? undefined : handleMiniPlayerPointerDown}
+          onPointerMove={floatingPlayer ? undefined : handleMiniPlayerPointerMove}
+          onPointerUp={floatingPlayer ? undefined : handleMiniPlayerPointerUp}
+          onPointerCancel={floatingPlayer ? undefined : handleMiniPlayerPointerUp}
+        >
+          <div className="quran-mini-cover" aria-hidden="true"><BookOpen size={19} /></div>
+          <div className="quran-mini-track">
+            <span>{isPlaying ? t.quranNowPlaying : resumeAvailable ? t.quranResumeHint : t.quranMiniPlayer}</span>
+            <strong>{selectedSurah?.name || t.quranLoading}</strong>
+            <small>{selectedReciter?.name || ''}</small>
+          </div>
+        </div>
+        <button type="button" className="quran-mini-open" onClick={onOpenLibrary} aria-label={t.quranOpenLibrary} title={t.quranOpenLibrary}>
+          <BookOpen size={17} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="quran-mini-float"
+          onClick={() => void handleToggleFloatingPlayer()}
+          aria-label={floatingPlayer ? t.quranExitFloatPlayer : t.quranFloatPlayer}
+          title={floatingPlayer ? t.quranExitFloatPlayer : t.quranFloatPlayer}
+          aria-pressed={Boolean(floatingPlayer)}
+        >
+          <ExternalLink size={16} aria-hidden="true" />
+        </button>
+      </div>
+      {reciters.length > 0 && selectedReciter && selectedSurah && (
+        <div className="quran-mini-selects">
+          <label>
+            <span className="sr-only">{t.quranReciter}</span>
+            <select
+              aria-label={t.quranReciter}
+              value={selectedReciter.id}
+              onChange={(event) => {
+                const nextReciter = reciters.find((reciter) => reciter.id === Number(event.target.value));
+                if (nextReciter) selectReciter(nextReciter);
+              }}
+            >
+              {reciters.map((reciter) => <option key={reciter.id} value={reciter.id}>{reciter.name}</option>)}
+            </select>
+          </label>
+          <label>
+            <span className="sr-only">{t.quranSurah}</span>
+            <select
+              aria-label={t.quranSurah}
+              value={selectedSurah.id}
+              onChange={(event) => selectFavoriteSurah(Number(event.target.value))}
+            >
+              {availableSurahs.map((surah) => <option key={surah.id} value={surah.id}>{surah.name}</option>)}
+            </select>
+          </label>
+        </div>
+      )}
+      {storageError && <p className="quran-mini-error" role="alert">{storageError}</p>}
+      {playbackError && <p className="quran-mini-error" role="alert">{playbackError}</p>}
+      {floatingError && <p className="quran-mini-error" role="alert">{floatingError}</p>}
+      <input
+        className="quran-mini-progress"
+        type="range"
+        min="0"
+        max={duration || 1}
+        step="1"
+        value={Math.min(currentTime, duration || 1)}
+        aria-label={t.quranPlaybackProgress}
+        style={{ background: `linear-gradient(to right, #d6bd78 ${progress}%, rgba(255,255,255,.16) ${progress}%)` }}
+        onChange={(event) => {
+          const nextTime = Number(event.target.value);
+          if (audioRef.current) audioRef.current.currentTime = nextTime;
+          setCurrentTime(nextTime);
+          preferencesRef.current.currentTime = nextTime;
+          persistPreferences();
+        }}
+        disabled={!audioUrl || duration <= 0}
+      />
+      <div className="quran-mini-footer">
+        <span dir="ltr">{formatTime(currentTime)} / {formatTime(duration)}</span>
+        <div className="quran-mini-controls">
+          <button type="button" onClick={() => selectSurahByOffset(-1)} disabled={currentSurahIndex <= 0} aria-label={t.quranPreviousSurah}>
+            <SkipBack size={17} aria-hidden="true" />
+          </button>
+          <button type="button" className="quran-mini-play" onClick={() => void handlePlayPause()} disabled={!audioUrl} aria-label={isPlaying || isBuffering ? t.quranPause : t.quranPlay}>
+            {isBuffering ? <Loader2 className="quran-spin" size={18} aria-hidden="true" /> : isPlaying ? <Pause size={18} fill="currentColor" aria-hidden="true" /> : <Play size={18} fill="currentColor" aria-hidden="true" />}
+          </button>
+          <button type="button" onClick={() => selectSurahByOffset(1)} disabled={currentSurahIndex < 0 || currentSurahIndex >= availableSurahs.length - 1} aria-label={t.quranNextSurah}>
+            <SkipForward size={17} aria-hidden="true" />
+          </button>
+        </div>
+        <button
+          type="button"
+          className={`quran-mini-favorite ${selectedSurah && favoriteSurahIds.includes(selectedSurah.id) ? 'is-active' : ''}`}
+          onClick={toggleFavoriteSurah}
+          aria-label={selectedSurah && favoriteSurahIds.includes(selectedSurah.id) ? t.quranRemoveFavoriteSurah : t.quranAddFavoriteSurah}
+          aria-pressed={Boolean(selectedSurah && favoriteSurahIds.includes(selectedSurah.id))}
+        >
+          <Star size={17} fill={selectedSurah && favoriteSurahIds.includes(selectedSurah.id) ? 'currentColor' : 'none'} aria-hidden="true" />
+        </button>
+      </div>
+    </aside>
+  );
 
   return (
     <>
@@ -839,6 +1060,16 @@ export default function QuranLibrary({ language, isActive, onPlaybackStart, onOp
                 >
                   <Star size={17} fill={selectedSurah && favoriteSurahIds.includes(selectedSurah.id) ? 'currentColor' : 'none'} aria-hidden="true" />
                 </button>
+                <button
+                  type="button"
+                  className="quran-favorite-toggle"
+                  onClick={() => void handleToggleFloatingPlayer()}
+                  aria-label={floatingPlayer ? t.quranExitFloatPlayer : t.quranFloatPlayer}
+                  title={floatingPlayer ? t.quranExitFloatPlayer : t.quranFloatPlayer}
+                  aria-pressed={Boolean(floatingPlayer)}
+                >
+                  <ExternalLink size={17} aria-hidden="true" />
+                </button>
                 <div className={`quran-live-indicator ${isPlaying ? 'is-playing' : ''}`} aria-hidden="true">
                   <i /><i /><i /><i />
                 </div>
@@ -932,6 +1163,7 @@ export default function QuranLibrary({ language, isActive, onPlaybackStart, onOp
               {playbackError && (
                 <p className="quran-playback-error" role="alert">{playbackError} {t.quranOffline}</p>
               )}
+              {floatingError && <p className="quran-playback-error" role="alert">{floatingError}</p>}
             </div>
             {resumeAvailable && !isPlaying && (
               <p className="quran-resume-note" role="status">{t.quranResumeHint}</p>
@@ -1019,91 +1251,11 @@ export default function QuranLibrary({ language, isActive, onPlaybackStart, onOp
         </aside>
       </>
     )}
-    {showMiniPlayer && (
-      <aside className="quran-mini-player" aria-label={t.quranMiniPlayer}>
-        <div className="quran-mini-player-heading">
-          <div className="quran-mini-cover" aria-hidden="true"><BookOpen size={19} /></div>
-          <div className="quran-mini-track">
-            <span>{isPlaying ? t.quranNowPlaying : resumeAvailable ? t.quranResumeHint : t.quranMiniPlayer}</span>
-            <strong>{selectedSurah?.name || t.quranLoading}</strong>
-            <small>{selectedReciter?.name || ''}</small>
-          </div>
-          <button type="button" className="quran-mini-open" onClick={onOpenLibrary} aria-label={t.quranOpenLibrary} title={t.quranOpenLibrary}>
-            <BookOpen size={17} aria-hidden="true" />
-          </button>
-        </div>
-        {reciters.length > 0 && selectedReciter && selectedSurah && (
-          <div className="quran-mini-selects">
-            <label>
-              <span className="sr-only">{t.quranReciter}</span>
-              <select
-                aria-label={t.quranReciter}
-                value={selectedReciter.id}
-                onChange={(event) => {
-                  const nextReciter = reciters.find((reciter) => reciter.id === Number(event.target.value));
-                  if (nextReciter) selectReciter(nextReciter);
-                }}
-              >
-                {reciters.map((reciter) => <option key={reciter.id} value={reciter.id}>{reciter.name}</option>)}
-              </select>
-            </label>
-            <label>
-              <span className="sr-only">{t.quranSurah}</span>
-              <select
-                aria-label={t.quranSurah}
-                value={selectedSurah.id}
-                onChange={(event) => selectFavoriteSurah(Number(event.target.value))}
-              >
-                {availableSurahs.map((surah) => <option key={surah.id} value={surah.id}>{surah.name}</option>)}
-              </select>
-            </label>
-          </div>
-        )}
-        {storageError && <p className="quran-mini-error" role="alert">{storageError}</p>}
-        {playbackError && <p className="quran-mini-error" role="alert">{playbackError}</p>}
-        <input
-          className="quran-mini-progress"
-          type="range"
-          min="0"
-          max={duration || 1}
-          step="1"
-          value={Math.min(currentTime, duration || 1)}
-          aria-label={t.quranPlaybackProgress}
-          style={{ background: `linear-gradient(to right, #d6bd78 ${progress}%, rgba(255,255,255,.16) ${progress}%)` }}
-          onChange={(event) => {
-            const nextTime = Number(event.target.value);
-            if (audioRef.current) audioRef.current.currentTime = nextTime;
-            setCurrentTime(nextTime);
-            preferencesRef.current.currentTime = nextTime;
-            persistPreferences();
-          }}
-          disabled={!audioUrl || duration <= 0}
-        />
-        <div className="quran-mini-footer">
-          <span dir="ltr">{formatTime(currentTime)} / {formatTime(duration)}</span>
-          <div className="quran-mini-controls">
-            <button type="button" onClick={() => selectSurahByOffset(-1)} disabled={currentSurahIndex <= 0} aria-label={t.quranPreviousSurah}>
-              <SkipBack size={17} aria-hidden="true" />
-            </button>
-            <button type="button" className="quran-mini-play" onClick={() => void handlePlayPause()} disabled={!audioUrl} aria-label={isPlaying || isBuffering ? t.quranPause : t.quranPlay}>
-              {isBuffering ? <Loader2 className="quran-spin" size={18} aria-hidden="true" /> : isPlaying ? <Pause size={18} fill="currentColor" aria-hidden="true" /> : <Play size={18} fill="currentColor" aria-hidden="true" />}
-            </button>
-            <button type="button" onClick={() => selectSurahByOffset(1)} disabled={currentSurahIndex < 0 || currentSurahIndex >= availableSurahs.length - 1} aria-label={t.quranNextSurah}>
-              <SkipForward size={17} aria-hidden="true" />
-            </button>
-          </div>
-          <button
-            type="button"
-            className={`quran-mini-favorite ${selectedSurah && favoriteSurahIds.includes(selectedSurah.id) ? 'is-active' : ''}`}
-            onClick={toggleFavoriteSurah}
-            aria-label={selectedSurah && favoriteSurahIds.includes(selectedSurah.id) ? t.quranRemoveFavoriteSurah : t.quranAddFavoriteSurah}
-            aria-pressed={Boolean(selectedSurah && favoriteSurahIds.includes(selectedSurah.id))}
-          >
-            <Star size={17} fill={selectedSurah && favoriteSurahIds.includes(selectedSurah.id) ? 'currentColor' : 'none'} aria-hidden="true" />
-          </button>
-        </div>
-      </aside>
+    {floatingPlayer && createPortal(
+      <div className="quran-pip-root">{miniPlayerContent}</div>,
+      floatingPlayer.container,
     )}
+    {showMiniPlayer && !floatingPlayer && miniPlayerContent}
     </>
   );
 }

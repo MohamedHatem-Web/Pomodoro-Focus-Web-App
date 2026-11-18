@@ -4,7 +4,8 @@ import { translations, Language } from './i18n';
 // Types
 type TimerMode = 'focus' | 'shortBreak' | 'longBreak';
 type Theme = 'light' | 'dark';
-type View = 'timer' | 'planner';
+type View = 'timer' | 'planner' | 'reports';
+type ReportPeriod = 'week' | 'month';
 
 interface TimerSettings {
   focus: number;
@@ -17,6 +18,28 @@ interface DailyStats {
   date: string;
   focusSessions: number;
   totalFocusMinutes: number;
+}
+
+interface ActivityEvent {
+  id: string;
+  type: 'focus_completed' | 'task_added' | 'task_completed' | 'task_uncompleted';
+  timestamp: number;
+  taskId?: string;
+  minutes?: number;
+}
+
+interface DailyReport {
+  date: string;
+  focusMinutes: number;
+  focusSessions: number;
+  plannedTasks: number;
+  completedTasks: number;
+  score: number | null;
+}
+
+interface ProductivityGoals {
+  dailyFocusMinutes: number;
+  studyDaysPerWeek: number;
 }
 
 interface TodoTask {
@@ -49,10 +72,13 @@ interface SavedTimerState {
 
 // Helper functions
 function getTodayKey(): string {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
+  return getDateKey(new Date());
+}
+
+function getDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
 
@@ -72,6 +98,45 @@ function loadStats(): DailyStats {
 function saveStats(stats: DailyStats) {
   const key = `pomodoro_stats_${stats.date}`;
   localStorage.setItem(key, JSON.stringify(stats));
+}
+
+function loadActivityEvents(): ActivityEvent[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem('pomodoro_activity_events') || '[]');
+    return Array.isArray(saved) ? saved : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadProductivityGoals(): ProductivityGoals {
+  try {
+    const saved = JSON.parse(localStorage.getItem('pomodoro_productivity_goals') || '{}');
+    return {
+      dailyFocusMinutes: Math.min(600, Math.max(30, Number(saved.dailyFocusMinutes) || 120)),
+      studyDaysPerWeek: Math.min(7, Math.max(1, Number(saved.studyDaysPerWeek) || 5)),
+    };
+  } catch {
+    return { dailyFocusMinutes: 120, studyDaysPerWeek: 5 };
+  }
+}
+
+function recordActivity(event: Omit<ActivityEvent, 'id' | 'timestamp'>) {
+  const events = loadActivityEvents();
+  events.push({ ...event, id: `${Date.now()}-${Math.random()}`, timestamp: Date.now() });
+  localStorage.setItem('pomodoro_activity_events', JSON.stringify(events));
+}
+
+function recordFocusCompletion(minutes: number) {
+  const stats = loadStats();
+  const updated = {
+    ...stats,
+    focusSessions: stats.focusSessions + 1,
+    totalFocusMinutes: stats.totalFocusMinutes + minutes,
+  };
+  saveStats(updated);
+  recordActivity({ type: 'focus_completed', minutes });
+  return updated;
 }
 
 function loadSettings(): TimerSettings {
@@ -139,6 +204,115 @@ function formatDuration(minutes: number): string {
   return `${remainingMinutes}m`;
 }
 
+interface GoalStepperProps {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (value: number) => void;
+}
+
+function GoalStepper({ label, value, min, max, step, onChange }: GoalStepperProps) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const parsed = Number(draft);
+    const next = Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : value;
+    setDraft(String(next));
+    onChange(next);
+  };
+
+  const adjust = (amount: number) => {
+    const next = Math.min(max, Math.max(min, value + amount));
+    setDraft(String(next));
+    onChange(next);
+  };
+
+  return (
+    <label className="goal-stepper block text-sm font-medium">
+      {label}
+      <div className="goal-stepper-control mt-1 flex items-center rounded-lg border border-gray-200 overflow-hidden">
+        <button
+          type="button"
+          onClick={() => adjust(-step)}
+          disabled={value <= min}
+          aria-label={`Decrease ${label}`}
+          className="goal-stepper-button w-11 h-10 text-xl font-semibold"
+        >
+          −
+        </button>
+        <input
+          type="number"
+          min={min}
+          max={max}
+          step={step}
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commit}
+          onKeyDown={(event) => event.key === 'Enter' && commit()}
+          className="goal-stepper-input h-10 min-w-0 flex-1 text-center font-semibold"
+        />
+        <button
+          type="button"
+          onClick={() => adjust(step)}
+          disabled={value >= max}
+          aria-label={`Increase ${label}`}
+          className="goal-stepper-button w-11 h-10 text-xl font-semibold"
+        >
+          +
+        </button>
+      </div>
+    </label>
+  );
+}
+
+function buildReports(events: ActivityEvent[], period: ReportPeriod, dailyFocusGoal: number, now = new Date()): DailyReport[] {
+  const firstDay = new Date(now.getFullYear(), now.getMonth(), period === 'week' ? now.getDate() - ((now.getDay() + 6) % 7) : 1);
+  const dayCount = period === 'week' ? 7 : new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const dates = Array.from({ length: dayCount }, (_, index) => {
+    const date = new Date(firstDay);
+    date.setDate(firstDay.getDate() + index);
+    return getDateKey(date);
+  });
+
+  return dates.map((date) => {
+    const dayEvents = events.filter((event) => getDateKey(new Date(event.timestamp)) === date);
+    const focusEvents = dayEvents.filter((event) => event.type === 'focus_completed');
+    const plannedEvents = dayEvents.filter((event) => event.type === 'task_added' && event.taskId);
+    const taskIds = new Set(plannedEvents.map((event) => event.taskId as string));
+    const taskStatus = new Map<string, boolean>();
+    dayEvents
+      .filter((event) => event.taskId && (event.type === 'task_completed' || event.type === 'task_uncompleted'))
+      .forEach((event) => taskStatus.set(event.taskId as string, event.type === 'task_completed'));
+
+    const focusMinutes = focusEvents.reduce((total, event) => total + (event.minutes || 0), 0);
+    const plannedTasks = taskIds.size;
+    const completedTasks = [...taskIds].filter((id) => taskStatus.get(id)).length;
+    const applicableWeight = 70 + (plannedTasks > 0 ? 30 : 0);
+    const score = focusMinutes === 0 && plannedTasks === 0
+      ? null
+      : Math.round((
+        Math.min(focusMinutes / dailyFocusGoal, 1) * 50 +
+        (plannedTasks > 0 ? completedTasks / plannedTasks * 30 : 0) +
+        (focusMinutes > 0 ? 20 : 0)
+      ) / applicableWeight * 100);
+
+    return {
+      date,
+      focusMinutes,
+      focusSessions: focusEvents.length,
+      plannedTasks,
+      completedTasks,
+      score,
+    };
+  });
+}
+
 function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
@@ -194,12 +368,57 @@ export default function App() {
   const [plannedSession, setPlannedSession] = useState<PlannedSession | null>(savedTimer?.plannedSession || null);
   const [plannerHours, setPlannerHours] = useState(2);
   const [plannerBreakCount, setPlannerBreakCount] = useState(2);
+  const [reportPeriod, setReportPeriod] = useState<ReportPeriod>('week');
+  const [activityEvents, setActivityEvents] = useState<ActivityEvent[]>(loadActivityEvents);
+  const [goals, setGoals] = useState<ProductivityGoals>(loadProductivityGoals);
+  const [tempGoals, setTempGoals] = useState<ProductivityGoals>(goals);
   const [plannerTasks, setPlannerTasks] = useState<TodoTask[]>([]);
   const [plannerNewTask, setPlannerNewTask] = useState('');
   const intervalRef = useRef<number | null>(null);
   const deadlineRef = useRef<number | null>(savedTimer?.deadline || null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const t = translations[language];
+  const logActivity = (event: Omit<ActivityEvent, 'id' | 'timestamp'>) => {
+    recordActivity(event);
+    setActivityEvents(loadActivityEvents());
+  };
+  const reports = buildReports(activityEvents, reportPeriod, goals.dailyFocusMinutes);
+  const reportDateKeys = new Set(reports.map((day) => day.date));
+  const periodEvents = activityEvents
+    .filter((event) => reportDateKeys.has(getDateKey(new Date(event.timestamp))))
+    .sort((a, b) => a.timestamp - b.timestamp);
+  const plannedTaskIds = new Set(
+    periodEvents.filter((event) => event.type === 'task_added' && event.taskId).map((event) => event.taskId as string),
+  );
+  const periodTaskStatus = new Map<string, boolean>();
+  periodEvents
+    .filter((event) => event.taskId && (event.type === 'task_completed' || event.type === 'task_uncompleted'))
+    .forEach((event) => periodTaskStatus.set(event.taskId as string, event.type === 'task_completed'));
+  const reportTotals = reports.reduce((total, day) => ({
+    focusMinutes: total.focusMinutes + day.focusMinutes,
+    focusSessions: total.focusSessions + day.focusSessions,
+    plannedTasks: 0,
+    completedTasks: 0,
+  }), { focusMinutes: 0, focusSessions: 0, plannedTasks: 0, completedTasks: 0 });
+  reportTotals.plannedTasks = plannedTaskIds.size;
+  reportTotals.completedTasks = [...plannedTaskIds].filter((id) => periodTaskStatus.get(id)).length;
+  const targetStudyDays = reportPeriod === 'week'
+    ? goals.studyDaysPerWeek
+    : Math.round(reports.length * goals.studyDaysPerWeek / 7);
+  const activeDays = reports.filter((day) => day.focusMinutes > 0).length;
+  const applicableScoreWeight = 70 + (reportTotals.plannedTasks > 0 ? 30 : 0);
+  const hasReportData = reportTotals.focusMinutes > 0 || reportTotals.plannedTasks > 0;
+  const reportScore = hasReportData
+    ? Math.round((
+      Math.min(reportTotals.focusMinutes / (goals.dailyFocusMinutes * targetStudyDays), 1) * 50 +
+      (reportTotals.plannedTasks > 0 ? reportTotals.completedTasks / reportTotals.plannedTasks * 30 : 0) +
+      Math.min(activeDays / targetStudyDays, 1) * 20
+    ) / applicableScoreWeight * 100)
+    : 0;
+  const bestDay = reports.reduce<DailyReport | null>(
+    (best, day) => day.focusMinutes > (best?.focusMinutes || 0) ? day : best,
+    null,
+  );
 
   useEffect(() => {
     document.documentElement.classList.remove('light', 'dark');
@@ -241,6 +460,10 @@ export default function App() {
   }, [todos]);
 
   useEffect(() => {
+    localStorage.setItem('pomodoro_productivity_goals', JSON.stringify(goals));
+  }, [goals]);
+
+  useEffect(() => {
     const state: SavedTimerState = {
       mode,
       timeLeft,
@@ -262,18 +485,16 @@ export default function App() {
     if (view === 'planner' && plannedSession?.isActive) {
       playNotification();
       if (plannedSession.currentPhase === 'focus') {
+        recordFocusCompletion(plannedSession.timePerTask);
+        setStats(loadStats());
+        setSessionsCompleted((completed) => {
+          const updated = completed + 1;
+          localStorage.setItem('pomodoro_sessions_completed', String(updated));
+          return updated;
+        });
+        setActivityEvents(loadActivityEvents());
         const nextIndex = plannedSession.currentTaskIndex + 1;
         if (nextIndex >= plannedSession.tasks.length) {
-          const newStats = { ...stats };
-          newStats.focusSessions += plannedSession.tasks.length;
-          newStats.totalFocusMinutes += plannedSession.timePerTask * plannedSession.tasks.length;
-          setStats(newStats);
-          saveStats(newStats);
-          setSessionsCompleted((completed) => {
-            const updated = completed + plannedSession.tasks.length;
-            localStorage.setItem('pomodoro_sessions_completed', String(updated));
-            return updated;
-          });
           setPlannedSession({ ...plannedSession, isActive: false, phaseTimeLeft: 0 });
           deadlineRef.current = null;
           return;
@@ -318,16 +539,12 @@ export default function App() {
     }
 
     if (mode === 'focus') {
+      recordFocusCompletion(settings.focus);
+      setStats(loadStats());
+      setActivityEvents(loadActivityEvents());
       const newSessions = sessionsCompleted + 1;
       setSessionsCompleted(newSessions);
       localStorage.setItem('pomodoro_sessions_completed', String(newSessions));
-      
-      // Update stats
-      const newStats = { ...stats };
-      newStats.focusSessions += 1;
-      newStats.totalFocusMinutes += settings.focus;
-      setStats(newStats);
-      saveStats(newStats);
 
       // Play notification sound
       playNotification();
@@ -347,7 +564,7 @@ export default function App() {
       setTimeLeft(settings.focus * 60);
     }
     deadlineRef.current = null;
-  }, [mode, sessionsCompleted, settings, stats, view, plannedSession]);
+  }, [mode, sessionsCompleted, settings, view, plannedSession]);
 
   const playNotification = () => {
     try {
@@ -356,19 +573,19 @@ export default function App() {
       audioContextRef.current = audioCtx;
       if (audioCtx.state === 'suspended') void audioCtx.resume();
 
-      [660, 880, 1046].forEach((frequency, index) => {
+      [523, 659, 784, 1046].forEach((frequency, index) => {
         const oscillator = audioCtx.createOscillator();
         const gainNode = audioCtx.createGain();
-        const start = audioCtx.currentTime + index * 0.18;
+        const start = audioCtx.currentTime + index * 0.28;
         oscillator.type = 'sine';
         oscillator.frequency.value = frequency;
         gainNode.gain.setValueAtTime(0.0001, start);
-        gainNode.gain.exponentialRampToValueAtTime(0.22, start + 0.02);
-        gainNode.gain.exponentialRampToValueAtTime(0.0001, start + 0.16);
+        gainNode.gain.exponentialRampToValueAtTime(0.2, start + 0.03);
+        gainNode.gain.exponentialRampToValueAtTime(0.0001, start + 0.34);
         oscillator.connect(gainNode);
         gainNode.connect(audioCtx.destination);
         oscillator.start(start);
-        oscillator.stop(start + 0.18);
+        oscillator.stop(start + 0.36);
       });
     } catch {
       // The timer remains usable when Web Audio is unavailable.
@@ -445,6 +662,7 @@ export default function App() {
 
   const handleSaveSettings = () => {
     setSettings(tempSettings);
+    setGoals(tempGoals);
     setShowSettings(false);
     // Reset timer if not running
     if (!isRunning) {
@@ -455,16 +673,26 @@ export default function App() {
 
   const handleOpenSettings = () => {
     setTempSettings(settings);
+    setTempGoals(goals);
     setShowSettings(true);
   };
 
   const addTodo = () => {
     if (!newTodo.trim()) return;
-    setTodos((tasks) => [...tasks, { id: `${Date.now()}`, text: newTodo.trim(), completed: false }]);
+    const task = { id: `${Date.now()}-${Math.random()}`, text: newTodo.trim(), completed: false };
+    setTodos((tasks) => [...tasks, task]);
+    logActivity({ type: 'task_added', taskId: task.id });
     setNewTodo('');
   };
 
   const toggleTodo = (id: string) => {
+    const task = todos.find((item) => item.id === id);
+    if (task) {
+      if (!activityEvents.some((event) => event.type === 'task_added' && event.taskId === id)) {
+        logActivity({ type: 'task_added', taskId: id });
+      }
+      logActivity({ type: task.completed ? 'task_uncompleted' : 'task_completed', taskId: id });
+    }
     setTodos((tasks) => tasks.map((task) => task.id === id ? { ...task, completed: !task.completed } : task));
   };
 
@@ -483,6 +711,8 @@ export default function App() {
   };
 
   const togglePlannedTask = (id: string) => {
+    const task = plannedSession?.tasks.find((item) => item.id === id);
+    if (task) logActivity({ type: task.completed ? 'task_uncompleted' : 'task_completed', taskId: id });
     setPlannedSession((session) => {
       if (!session) return session;
       return {
@@ -499,8 +729,15 @@ export default function App() {
     const effectiveBreakCount = Math.min(plannerBreakCount, plannerTasks.length - 1);
     const focusTime = totalMinutes - effectiveBreakCount * breakDuration;
     const timePerTask = Math.max(1, Math.floor(focusTime / plannerTasks.length));
+    const sessionId = `${Date.now()}-${Math.random()}`;
+    const sessionTasks = plannerTasks.map((task) => ({
+      ...task,
+      id: `${sessionId}-${task.id}`,
+      completed: false,
+    }));
+    sessionTasks.forEach((task) => logActivity({ type: 'task_added', taskId: task.id }));
     const nextSession: PlannedSession = {
-      tasks: [...plannerTasks],
+      tasks: sessionTasks,
       timePerTask,
       breakDuration,
       currentTaskIndex: 0,
@@ -536,14 +773,24 @@ export default function App() {
           <span>{language === 'en' ? '🇪🇬' : '🇺🇸'}</span>
           <span>{language === 'en' ? 'عربي' : 'English'}</span>
         </button>
-        <button
-          type="button"
-          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-          className="theme-toggle w-10 h-10 rounded-full border flex items-center justify-center"
-          aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-        >
-          {theme === 'dark' ? '☀️' : '🌙'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleOpenSettings}
+            className="theme-toggle px-3 h-10 rounded-lg border flex items-center gap-2 text-sm font-medium"
+          >
+            <span>🎯</span>
+            <span>{t.goals}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            className="theme-toggle w-10 h-10 rounded-full border flex items-center justify-center"
+            aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {theme === 'dark' ? '☀️' : '🌙'}
+          </button>
+        </div>
       </div>
 
       {/* Header */}
@@ -566,6 +813,12 @@ export default function App() {
           className={`px-5 py-2 rounded-lg text-sm font-medium ${view === 'planner' ? 'bg-gray-800 text-white' : 'text-gray-600'}`}
         >
           {t.planner}
+        </button>
+        <button
+          onClick={() => setView('reports')}
+          className={`px-5 py-2 rounded-lg text-sm font-medium ${view === 'reports' ? 'bg-gray-800 text-white' : 'text-gray-600'}`}
+        >
+          {t.reports}
         </button>
       </div>
 
@@ -870,10 +1123,128 @@ export default function App() {
         </div>
       )}
 
+      {view === 'reports' && (
+        <section className="report-panel w-full max-w-2xl bg-white rounded-2xl p-5 sm:p-6 shadow-sm border border-gray-100 mb-6">
+          <div className="flex items-center justify-between gap-3 mb-5">
+            <h2 className="text-xl font-bold text-gray-800">{t.reports}</h2>
+            <div className="report-period-switch flex gap-1 p-1 rounded-lg bg-gray-100">
+              <button
+                onClick={() => setReportPeriod('week')}
+                className={`report-period-button px-3 py-1.5 rounded-md text-sm ${reportPeriod === 'week' ? 'is-active bg-white shadow-sm text-gray-800' : 'text-gray-500'}`}
+              >
+                {t.week}
+              </button>
+              <button
+                onClick={() => setReportPeriod('month')}
+                className={`report-period-button px-3 py-1.5 rounded-md text-sm ${reportPeriod === 'month' ? 'is-active bg-white shadow-sm text-gray-800' : 'text-gray-500'}`}
+              >
+                {t.month}
+              </button>
+            </div>
+          </div>
+
+          <div className="report-goals-card rounded-xl border border-gray-100 p-4 mb-5">
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <h3 className="text-sm font-bold text-gray-800">🎯 {t.goals}</h3>
+              <p className="text-xs text-gray-400">{t.goalControlsHint}</p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <GoalStepper
+                label={t.dailyFocusGoal}
+                value={goals.dailyFocusMinutes}
+                min={30}
+                max={600}
+                step={15}
+                onChange={(dailyFocusMinutes) => setGoals((current) => ({ ...current, dailyFocusMinutes }))}
+              />
+              <GoalStepper
+                label={t.studyDaysGoal}
+                value={goals.studyDaysPerWeek}
+                min={1}
+                max={7}
+                step={1}
+                onChange={(studyDaysPerWeek) => setGoals((current) => ({ ...current, studyDaysPerWeek }))}
+              />
+            </div>
+          </div>
+
+          {!hasReportData ? (
+            <div className="py-10 text-center">
+              <span className="text-4xl">📊</span>
+              <p className="mt-3 text-gray-700 font-medium">{t.noReportData}</p>
+              <p className="mt-2 text-sm text-gray-400">{t.trackingNote}</p>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+                <div className="report-stat-card report-stat-focus rounded-xl bg-red-50 p-3">
+                  <p className="text-xs text-gray-500">{t.focusMinutes}</p>
+                  <p className="report-stat-number mt-1 text-xl font-bold text-red-600">{formatDuration(reportTotals.focusMinutes)}</p>
+                </div>
+                <div className="report-stat-card report-stat-sessions rounded-xl bg-blue-50 p-3">
+                  <p className="text-xs text-gray-500">{t.sessions}</p>
+                  <p className="report-stat-number mt-1 text-xl font-bold text-blue-600">{reportTotals.focusSessions}</p>
+                </div>
+                <div className="report-stat-card report-stat-tasks rounded-xl bg-emerald-50 p-3">
+                  <p className="text-xs text-gray-500">{t.tasksDone}</p>
+                  <p className="report-stat-number mt-1 text-xl font-bold text-emerald-600">
+                    {reportTotals.completedTasks}/{reportTotals.plannedTasks}
+                  </p>
+                </div>
+                <div className="report-stat-card report-stat-score rounded-xl bg-amber-50 p-3">
+                  <p className="text-xs text-gray-500">{t.score}</p>
+                  <p className="report-stat-number mt-1 text-xl font-bold text-amber-600">{reportScore}<span className="text-sm">/100</span></p>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between text-sm text-gray-500 mb-3">
+                <span>{t.activeDays}: {activeDays}/{targetStudyDays}</span>
+                <span>{Math.round(reportTotals.plannedTasks ? reportTotals.completedTasks / reportTotals.plannedTasks * 100 : 0)}% {t.tasksDone}</span>
+              </div>
+              <p className="text-xs text-gray-400 mb-3">{t.scoreFormula}</p>
+              {bestDay && bestDay.focusMinutes > 0 && (
+                <p className="text-xs text-gray-500 mb-3">
+                  {t.bestDay}: {new Date(`${bestDay.date}T12:00:00`).toLocaleDateString(language === 'ar' ? 'ar-EG' : 'en-US', { weekday: 'long' })}
+                  {' · '}{formatDuration(bestDay.focusMinutes)}
+                </p>
+              )}
+              <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+                {reports.map((day) => {
+                  const date = new Date(`${day.date}T12:00:00`);
+                  const label = date.toLocaleDateString(language === 'ar' ? 'ar-EG' : 'en-US', {
+                    weekday: 'short',
+                    month: reportPeriod === 'month' ? 'short' : undefined,
+                    day: 'numeric',
+                  });
+                  const barWidth = reportTotals.focusMinutes
+                    ? Math.max(day.focusMinutes ? 3 : 0, day.focusMinutes / Math.max(reportTotals.focusMinutes, 120) * 100)
+                    : 0;
+                  return (
+                    <div key={day.date} className="report-row grid grid-cols-[52px_1fr_54px] sm:grid-cols-[72px_1fr_64px] items-center gap-2 text-xs">
+                      <span className="report-row-label text-gray-500">{label}</span>
+                      <div className="report-row-track h-7 rounded-md bg-gray-100 overflow-hidden relative">
+                        <div className="h-full rounded-md bg-gradient-to-r from-red-400 to-orange-400" style={{ width: `${barWidth}%` }} />
+                        <span className="absolute inset-y-0 left-2 flex items-center text-gray-600">
+                          {day.focusMinutes ? formatDuration(day.focusMinutes) : '—'}
+                          {day.plannedTasks ? ` · ${day.completedTasks}/${day.plannedTasks}` : ''}
+                        </span>
+                      </div>
+                      <span className={`report-row-score text-right font-semibold ${day.score === null ? 'text-gray-300' : 'text-amber-600'}`}>
+                        {day.score === null ? '—' : `${day.score}/100`}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </section>
+      )}
+
       {/* Settings Modal */}
       {showSettings && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl transform animate-in">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-sm max-h-[90vh] overflow-y-auto shadow-2xl transform animate-in">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-xl font-bold text-gray-800">⚙️ {t.settings}</h2>
               <button
@@ -944,6 +1315,29 @@ export default function App() {
               </div>
             </div>
 
+            <section className="goal-settings-section mt-6 border-t border-gray-100 pt-4">
+              <h3 className="text-sm font-bold text-gray-800 mb-1">🎯 {t.goals}</h3>
+              <p className="text-xs text-gray-500 mb-3">{t.goalControlsHint}</p>
+              <div className="space-y-3">
+                <GoalStepper
+                  label={t.dailyFocusGoal}
+                  value={tempGoals.dailyFocusMinutes}
+                  min={30}
+                  max={600}
+                  step={15}
+                  onChange={(dailyFocusMinutes) => setTempGoals((current) => ({ ...current, dailyFocusMinutes }))}
+                />
+                <GoalStepper
+                  label={t.studyDaysGoal}
+                  value={tempGoals.studyDaysPerWeek}
+                  min={1}
+                  max={7}
+                  step={1}
+                  onChange={(studyDaysPerWeek) => setTempGoals((current) => ({ ...current, studyDaysPerWeek }))}
+                />
+              </div>
+            </section>
+
             <div className="flex gap-3 mt-6">
               <button
                 onClick={() => setShowSettings(false)}
@@ -970,7 +1364,12 @@ export default function App() {
           rel="noopener noreferrer"
           className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white border border-gray-200 shadow-sm"
         >
-          <span className="w-7 h-7 bg-gradient-to-br from-red-500 to-orange-500 rounded-full flex items-center justify-center text-white text-xs font-bold">M</span>
+          <img
+            src={`${import.meta.env.BASE_URL}my-photo.png`}
+            alt="Mohamed Hatem"
+            className="w-9 h-9 rounded-full object-cover object-center ring-2 ring-white dark:ring-gray-700"
+            loading="lazy"
+          />
           <span className="text-left">
             <span className="block text-xs text-gray-400 leading-none">{t.developedBy}</span>
             <span className="block text-sm font-semibold text-gray-700">Mohamed Hatem</span>

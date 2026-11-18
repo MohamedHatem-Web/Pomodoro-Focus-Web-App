@@ -164,6 +164,36 @@ button:active {
   background: #f9fafb;
 }
 
+.prayers-panel {
+  background: #ffffff;
+}
+
+.prayer-category-nav {
+  background: #f9fafb;
+}
+
+.prayer-category-button {
+  color: #4b5563;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.prayer-category-button:hover {
+  background: #f3f4f6;
+}
+
+.prayer-category-button.is-active {
+  background: #1f2937;
+  color: #ffffff;
+}
+
+.prayer-card {
+  background: #ffffff;
+}
+
+.prayer-text {
+  color: #1f2937;
+}
+
 .timer-ring {
   border-radius: 9999px;
   filter: drop-shadow(0 18px 24px rgba(15, 23, 42, 0.08));
@@ -245,6 +275,37 @@ button:active {
 }
 
 .app-shell.dark .goal-settings-section h3 {
+  color: #f9fafb;
+}
+
+.app-shell.dark .prayers-panel {
+  background: #1f2937;
+  border-color: #374151;
+}
+
+.app-shell.dark .prayer-category-nav {
+  background: #111827;
+}
+
+.app-shell.dark .prayer-category-button {
+  color: #d1d5db;
+}
+
+.app-shell.dark .prayer-category-button:hover {
+  background: #374151;
+}
+
+.app-shell.dark .prayer-category-button.is-active {
+  background: #7c3aed;
+  color: #ffffff;
+}
+
+.app-shell.dark .prayer-card {
+  background: #111827;
+  border-color: #374151;
+}
+
+.app-shell.dark .prayer-text {
   color: #f9fafb;
 }
 

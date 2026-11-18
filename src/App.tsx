@@ -4,8 +4,106 @@ import { translations, Language } from './i18n';
 // Types
 type TimerMode = 'focus' | 'shortBreak' | 'longBreak';
 type Theme = 'light' | 'dark';
-type View = 'timer' | 'planner' | 'reports';
+type View = 'timer' | 'planner' | 'reports' | 'prayers';
 type ReportPeriod = 'week' | 'month';
+type PrayerCategoryId = 'study' | 'exam' | 'ease' | 'forgiveness' | 'after';
+
+const prayerCategories: {
+  id: PrayerCategoryId;
+  title: { en: string; ar: string };
+  prayers: { arabic: string; english: string; source: { en: string; ar: string } }[];
+}[] = [
+  {
+    id: 'study',
+    title: { en: 'Before studying', ar: 'قبل المذاكرة' },
+    prayers: [
+      {
+        arabic: 'رَبِّ زِدْنِي عِلْمًا',
+        english: 'My Lord, increase me in knowledge.',
+        source: { en: 'Quran, Ta-Ha 20:114', ar: 'القرآن الكريم، طه: ١١٤' },
+      },
+      {
+        arabic: 'رَبِّ اشْرَحْ لِي صَدْرِي وَيَسِّرْ لِي أَمْرِي',
+        english: 'My Lord, expand for me my chest and ease for me my task.',
+        source: { en: 'Quran, Ta-Ha 20:25–26', ar: 'القرآن الكريم، طه: ٢٥–٢٦' },
+      },
+      {
+        arabic: 'اللهم افتح عليّ أبواب الفهم، وارزقني علمًا نافعًا، وبارك لي في وقتي.',
+        english: 'O Allah, open the doors of understanding for me, grant me beneficial knowledge, and bless my time.',
+        source: { en: 'General supplication', ar: 'دعاء عام' },
+      },
+    ],
+  },
+  {
+    id: 'exam',
+    title: { en: 'Starting an exam', ar: 'بداية حل الامتحان' },
+    prayers: [
+      {
+        arabic: 'رَبَّنَا أَفْرِغْ عَلَيْنَا صَبْرًا وَثَبِّتْ أَقْدَامَنَا',
+        english: 'Our Lord, pour upon us patience and make our steps firm.',
+        source: { en: 'Quran, Al-Baqarah 2:250', ar: 'القرآن الكريم، البقرة: ٢٥٠' },
+      },
+      {
+        arabic: 'اللهم ذكّرني ما نسيت، واهدني للصواب، ويسّر لي الإجابة.',
+        english: 'O Allah, remind me of what I have forgotten, guide me to what is correct, and make my answers easy.',
+        source: { en: 'General supplication', ar: 'دعاء عام' },
+      },
+    ],
+  },
+  {
+    id: 'ease',
+    title: { en: 'For ease and calm', ar: 'للتيسير والطمأنينة' },
+    prayers: [
+      {
+        arabic: 'اللهم لا سهل إلا ما جعلته سهلًا، وأنت تجعل الصعب إذا شئت سهلًا.',
+        english: 'O Allah, nothing is easy except what You make easy, and You can make what is difficult easy if You will.',
+        source: { en: 'Supplication for ease', ar: 'دعاء للتيسير' },
+      },
+      {
+        arabic: 'لَا إِلَهَ إِلَّا أَنْتَ سُبْحَانَكَ إِنِّي كُنْتُ مِنَ الظَّالِمِينَ',
+        english: 'There is no deity except You; exalted are You. Indeed, I have been of the wrongdoers.',
+        source: { en: 'Quran, Al-Anbiya 21:87', ar: 'القرآن الكريم، الأنبياء: ٨٧' },
+      },
+      {
+        arabic: 'حَسْبُنَا اللَّهُ وَنِعْمَ الْوَكِيلُ',
+        english: 'Allah is sufficient for us, and He is the best Disposer of affairs.',
+        source: { en: 'Quran, Aal-E-Imran 3:173', ar: 'القرآن الكريم، آل عمران: ١٧٣' },
+      },
+    ],
+  },
+  {
+    id: 'forgiveness',
+    title: { en: 'Istighfar and remembrance', ar: 'استغفار وأذكار' },
+    prayers: [
+      {
+        arabic: 'أَسْتَغْفِرُ اللَّهَ وَأَتُوبُ إِلَيْهِ',
+        english: 'I seek Allah’s forgiveness and repent to Him.',
+        source: { en: 'Istighfar', ar: 'استغفار' },
+      },
+      {
+        arabic: 'رَبِّ اغْفِرْ لِي وَتُبْ عَلَيَّ إِنَّكَ أَنْتَ التَّوَّابُ الرَّحِيمُ',
+        english: 'My Lord, forgive me and accept my repentance. You are the Accepting of repentance, the Merciful.',
+        source: { en: 'Supplication for forgiveness', ar: 'دعاء استغفار' },
+      },
+    ],
+  },
+  {
+    id: 'after',
+    title: { en: 'After studying', ar: 'بعد المذاكرة' },
+    prayers: [
+      {
+        arabic: 'الْحَمْدُ لِلَّهِ الَّذِي بِنِعْمَتِهِ تَتِمُّ الصَّالِحَاتُ',
+        english: 'Praise be to Allah, by whose blessing good things are completed.',
+        source: { en: 'Words of praise', ar: 'من ألفاظ الحمد' },
+      },
+      {
+        arabic: 'رَبَّنَا تَقَبَّلْ مِنَّا إِنَّكَ أَنْتَ السَّمِيعُ الْعَلِيمُ',
+        english: 'Our Lord, accept this from us. Indeed, You are the Hearing, the Knowing.',
+        source: { en: 'Quran, Al-Baqarah 2:127', ar: 'القرآن الكريم، البقرة: ١٢٧' },
+      },
+    ],
+  },
+];
 
 interface TimerSettings {
   focus: number;
@@ -369,6 +467,7 @@ export default function App() {
   const [plannerHours, setPlannerHours] = useState(2);
   const [plannerBreakCount, setPlannerBreakCount] = useState(2);
   const [reportPeriod, setReportPeriod] = useState<ReportPeriod>('week');
+  const [prayerFilter, setPrayerFilter] = useState<PrayerCategoryId | 'all'>('all');
   const [activityEvents, setActivityEvents] = useState<ActivityEvent[]>(loadActivityEvents);
   const [goals, setGoals] = useState<ProductivityGoals>(loadProductivityGoals);
   const [tempGoals, setTempGoals] = useState<ProductivityGoals>(goals);
@@ -801,7 +900,7 @@ export default function App() {
         <p className="text-gray-500 text-sm mt-1">{t.subtitle}</p>
       </div>
 
-      <div className="flex gap-2 mb-6 bg-white rounded-xl p-1.5 shadow-sm border border-gray-100">
+      <div className="flex flex-wrap justify-center gap-2 mb-6 bg-white rounded-xl p-1.5 shadow-sm border border-gray-100">
         <button
           onClick={() => setView('timer')}
           className={`px-5 py-2 rounded-lg text-sm font-medium ${view === 'timer' ? 'bg-gray-800 text-white' : 'text-gray-600'}`}
@@ -819,6 +918,12 @@ export default function App() {
           className={`px-5 py-2 rounded-lg text-sm font-medium ${view === 'reports' ? 'bg-gray-800 text-white' : 'text-gray-600'}`}
         >
           {t.reports}
+        </button>
+        <button
+          onClick={() => setView('prayers')}
+          className={`px-5 py-2 rounded-lg text-sm font-medium ${view === 'prayers' ? 'bg-gray-800 text-white' : 'text-gray-600'}`}
+        >
+          {t.prayers}
         </button>
       </div>
 
@@ -1238,6 +1343,64 @@ export default function App() {
               </div>
             </>
           )}
+        </section>
+      )}
+
+      {view === 'prayers' && (
+        <section className="prayers-panel w-full max-w-3xl bg-white rounded-2xl p-5 sm:p-6 shadow-sm border border-gray-100 mb-6">
+          <div className="mb-5">
+            <h2 className="text-xl font-bold text-gray-800">🤲 {t.prayers}</h2>
+            <p className="text-sm text-gray-500 mt-2">{t.prayerNote}</p>
+          </div>
+          <div className="prayer-category-nav flex flex-wrap gap-2 p-2 rounded-xl bg-gray-50 mb-5">
+            <button
+              type="button"
+              onClick={() => setPrayerFilter('all')}
+              aria-pressed={prayerFilter === 'all'}
+              className={`prayer-category-button px-3 py-2 rounded-lg text-sm ${prayerFilter === 'all' ? 'is-active' : ''}`}
+            >
+              {t.allPrayers}
+            </button>
+            {prayerCategories.map((category) => (
+              <button
+                key={category.id}
+                type="button"
+                onClick={() => setPrayerFilter(category.id)}
+                aria-pressed={prayerFilter === category.id}
+                className={`prayer-category-button px-3 py-2 rounded-lg text-sm ${prayerFilter === category.id ? 'is-active' : ''}`}
+              >
+                {category.title[language]}
+              </button>
+            ))}
+          </div>
+          <div className="space-y-6">
+            {prayerCategories
+              .filter((category) => prayerFilter === 'all' || prayerFilter === category.id)
+              .map((category) => (
+                <section key={category.id}>
+                  <h3 className="text-base font-bold text-gray-800 mb-3">
+                  {category.title[language]}
+                  </h3>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {category.prayers.map((prayer, index) => (
+                      <article key={`${category.id}-${index}`} className="prayer-card rounded-xl border border-gray-100 p-4">
+                        <p lang="ar" dir="rtl" className="prayer-text text-right text-xl leading-loose font-medium">
+                          {prayer.arabic}
+                        </p>
+                        {language === 'en' && (
+                          <p lang="en" dir="ltr" className="prayer-translation text-sm text-gray-600 mt-2">
+                            {prayer.english}
+                          </p>
+                        )}
+                        <p className="prayer-source text-xs text-gray-400 mt-3">
+                          {prayer.source[language]}
+                        </p>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              ))}
+          </div>
         </section>
       )}
 

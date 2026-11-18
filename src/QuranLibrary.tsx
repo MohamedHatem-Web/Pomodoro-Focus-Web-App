@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import {
   BookOpen,
   ExternalLink,
+  Eye,
+  EyeOff,
   Headphones,
   Loader2,
   Pause,
@@ -55,6 +57,7 @@ interface QuranPreferences {
   currentTime: number;
   wasPlaying: boolean;
   hasPlayed: boolean;
+  miniPlayerHidden: boolean;
 }
 
 const catalogCache = new Map<Language, QuranCatalog>();
@@ -69,6 +72,7 @@ const EMPTY_PREFERENCES: QuranPreferences = {
   currentTime: 0,
   wasPlaying: false,
   hasPlayed: false,
+  miniPlayerHidden: false,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -103,6 +107,7 @@ function loadQuranPreferences(): QuranPreferences {
         : 0,
       wasPlaying: saved.wasPlaying === true,
       hasPlayed: saved.hasPlayed === true,
+      miniPlayerHidden: saved.miniPlayerHidden === true,
     };
   } catch (error) {
     console.error('Unable to load saved Quran preferences.', error);
@@ -243,6 +248,7 @@ export default function QuranLibrary({ language, isActive, onOpenLibrary }: Qura
   const [favoriteReciterIds, setFavoriteReciterIds] = useState(savedPreferences.favoriteReciterIds);
   const [favoriteSurahIds, setFavoriteSurahIds] = useState(savedPreferences.favoriteSurahIds);
   const [hasPlayed, setHasPlayed] = useState(savedPreferences.hasPlayed);
+  const [isMiniPlayerHidden, setIsMiniPlayerHidden] = useState(savedPreferences.miniPlayerHidden);
   const [resumeAvailable, setResumeAvailable] = useState(savedPreferences.currentTime > 0);
   const [isFavoritesOpen, setIsFavoritesOpen] = useState(false);
   const [isReciterSearchOpen, setIsReciterSearchOpen] = useState(false);
@@ -340,6 +346,7 @@ export default function QuranLibrary({ language, isActive, onOpenLibrary }: Qura
     favoriteSurahIds,
     currentTime,
     hasPlayed,
+    miniPlayerHidden: isMiniPlayerHidden,
   };
 
   useEffect(() => {
@@ -394,6 +401,7 @@ export default function QuranLibrary({ language, isActive, onOpenLibrary }: Qura
     favoriteReciterIds,
     favoriteSurahIds,
     hasPlayed,
+    isMiniPlayerHidden,
     persistPreferences,
   ]);
 
@@ -653,6 +661,22 @@ export default function QuranLibrary({ language, isActive, onOpenLibrary }: Qura
     }
   };
 
+  const hideMiniPlayer = () => {
+    setIsMiniPlayerHidden(true);
+    if (floatingPlayer) {
+      floatingPlayer.window.close();
+      setFloatingPlayer(null);
+    }
+  };
+
+  const toggleMiniPlayerVisibility = () => {
+    if (isMiniPlayerHidden) {
+      setIsMiniPlayerHidden(false);
+    } else {
+      hideMiniPlayer();
+    }
+  };
+
   const handleMiniPlayerPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || !miniPlayerRef.current) return;
     const bounds = miniPlayerRef.current.getBoundingClientRect();
@@ -689,7 +713,7 @@ export default function QuranLibrary({ language, isActive, onOpenLibrary }: Qura
 
   const favoriteReciters = reciters.filter((reciter) => favoriteReciterIds.includes(reciter.id));
   const favoriteSurahs = (visibleCatalog?.surahs || []).filter((surah) => favoriteSurahIds.includes(surah.id));
-  const showMiniPlayer = !isActive && hasPlayed;
+  const showMiniPlayer = !isActive && hasPlayed && !isMiniPlayerHidden;
   const miniPlayerContent = (
     <aside
       ref={miniPlayerRef}
@@ -729,6 +753,15 @@ export default function QuranLibrary({ language, isActive, onOpenLibrary }: Qura
           aria-pressed={Boolean(floatingPlayer)}
         >
           <ExternalLink size={16} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="quran-mini-close"
+          onClick={hideMiniPlayer}
+          aria-label={t.quranHideMiniPlayer}
+          title={t.quranHideMiniPlayer}
+        >
+          <X size={16} aria-hidden="true" />
         </button>
       </div>
       {reciters.length > 0 && selectedReciter && selectedSurah && (
@@ -1070,6 +1103,18 @@ export default function QuranLibrary({ language, isActive, onOpenLibrary }: Qura
                 >
                   <ExternalLink size={17} aria-hidden="true" />
                 </button>
+                <button
+                  type="button"
+                  className="quran-favorite-toggle"
+                  onClick={toggleMiniPlayerVisibility}
+                  aria-label={isMiniPlayerHidden ? t.quranShowMiniPlayer : t.quranHideMiniPlayer}
+                  title={isMiniPlayerHidden ? t.quranShowMiniPlayer : t.quranHideMiniPlayer}
+                  aria-pressed={!isMiniPlayerHidden}
+                >
+                  {isMiniPlayerHidden
+                    ? <Eye size={17} aria-hidden="true" />
+                    : <EyeOff size={17} aria-hidden="true" />}
+                </button>
                 <div className={`quran-live-indicator ${isPlaying ? 'is-playing' : ''}`} aria-hidden="true">
                   <i /><i /><i /><i />
                 </div>
@@ -1251,7 +1296,7 @@ export default function QuranLibrary({ language, isActive, onOpenLibrary }: Qura
         </aside>
       </>
     )}
-    {floatingPlayer && createPortal(
+    {floatingPlayer && !isMiniPlayerHidden && createPortal(
       <div className="quran-pip-root">{miniPlayerContent}</div>,
       floatingPlayer.container,
     )}

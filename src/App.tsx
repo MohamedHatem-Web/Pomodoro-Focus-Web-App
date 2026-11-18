@@ -8,6 +8,7 @@ type Theme = 'light' | 'dark';
 type View = 'timer' | 'planner' | 'reports' | 'prayers' | 'quran';
 type ReportPeriod = 'week' | 'month';
 type PrayerCategoryId = 'study' | 'exam' | 'ease' | 'forgiveness' | 'after';
+type PlannerDurationMode = 'focus-only' | 'elapsed-total';
 
 interface BackupPayload {
   format: 'focus-to-work-backup';
@@ -157,6 +158,8 @@ interface TodoTask {
 interface PlannedSession {
   tasks: TodoTask[];
   timePerTask: number;
+  focusBlockMinutes?: number[];
+  completedFocusBlocks?: number;
   breakDuration: number;
   currentTaskIndex: number;
   currentPhase: 'focus' | 'break';
@@ -165,6 +168,57 @@ interface PlannedSession {
   breaksDone: number;
   breakCount: number;
   pendingTaskIndex: number;
+}
+
+const MINIMUM_PLANNER_FOCUS_BLOCK_MINUTES = 25;
+
+function getCompletedFocusBlocks(session: PlannedSession): number {
+  if (session.completedFocusBlocks !== undefined) return session.completedFocusBlocks;
+  return session.currentPhase === 'break'
+    ? Math.max(0, session.breaksDone - 1)
+    : session.breaksDone;
+}
+
+function getCompletedBreaks(session: PlannedSession): number {
+  if (session.completedFocusBlocks === undefined && session.currentPhase === 'break') {
+    return Math.max(0, session.breaksDone - 1);
+  }
+  return session.breaksDone;
+}
+
+function getFocusBlockMinutes(session: PlannedSession, blockIndex = getCompletedFocusBlocks(session)): number {
+  return session.focusBlockMinutes?.[blockIndex] ?? session.timePerTask;
+}
+
+function getMaximumPlannerBreaks(
+  totalMinutes: number,
+  durationMode: PlannerDurationMode,
+  breakDuration: number,
+): number {
+  const safeBreakDuration = Math.max(0, breakDuration);
+  const maximum = durationMode === 'focus-only'
+    ? Math.floor(totalMinutes / MINIMUM_PLANNER_FOCUS_BLOCK_MINUTES) - 1
+    : Math.floor(
+      (totalMinutes - MINIMUM_PLANNER_FOCUS_BLOCK_MINUTES) /
+      (MINIMUM_PLANNER_FOCUS_BLOCK_MINUTES + safeBreakDuration),
+    );
+  return Math.min(10, Math.max(0, maximum));
+}
+
+function getMaximumPlannerBreakDuration(
+  totalMinutes: number,
+  durationMode: PlannerDurationMode,
+): number {
+  const sessionLimit = durationMode === 'focus-only'
+    ? Math.floor(totalMinutes / 4)
+    : totalMinutes - MINIMUM_PLANNER_FOCUS_BLOCK_MINUTES * 2;
+  return Math.min(30, Math.max(0, sessionLimit));
+}
+
+function distributeFocusMinutes(totalMinutes: number, blockCount: number): number[] {
+  const baseMinutes = Math.floor(totalMinutes / blockCount);
+  const extraMinutes = totalMinutes % blockCount;
+  return Array.from({ length: blockCount }, (_, index) => baseMinutes + (index < extraMinutes ? 1 : 0));
 }
 
 interface SavedTimerState {
@@ -378,7 +432,15 @@ function isPlannedSession(value: unknown): value is PlannedSession {
   return isRecord(value) &&
     isTodoTaskArray(value.tasks) &&
     Number.isFinite(value.timePerTask) && Number(value.timePerTask) >= 1 && Number(value.timePerTask) <= 480 &&
-    Number.isFinite(value.breakDuration) && Number(value.breakDuration) >= 0 && Number(value.breakDuration) <= 60 &&
+    (value.focusBlockMinutes === undefined ||
+      (Array.isArray(value.focusBlockMinutes) &&
+        value.focusBlockMinutes.length === Number(value.breakCount) + 1 &&
+        value.focusBlockMinutes.every((minutes) => Number.isInteger(minutes) && Number(minutes) >= 1 && Number(minutes) <= 480) &&
+        value.focusBlockMinutes.reduce((sum, minutes) => sum + Number(minutes), 0) <= 480)) &&
+    (value.completedFocusBlocks === undefined ||
+      (Number.isInteger(value.completedFocusBlocks) && Number(value.completedFocusBlocks) >= 0 &&
+        Number(value.completedFocusBlocks) <= Number(value.breakCount) + 1)) &&
+    Number.isFinite(value.breakDuration) && Number(value.breakDuration) >= 0 && Number(value.breakDuration) <= 30 &&
     Number.isInteger(value.currentTaskIndex) && Number(value.currentTaskIndex) >= 0 &&
     Number(value.currentTaskIndex) < value.tasks.length &&
     (value.currentPhase === 'focus' || value.currentPhase === 'break') &&
@@ -512,7 +574,8 @@ function validateBackup(value: unknown): BackupPayload {
         !isIdList(preferences.favoriteSurahIds, 114) ||
         !Number.isFinite(preferences.currentTime) || Number(preferences.currentTime) < 0 ||
         typeof preferences.wasPlaying !== 'boolean' ||
-        typeof preferences.hasPlayed !== 'boolean') {
+        typeof preferences.hasPlayed !== 'boolean' ||
+        (preferences.miniPlayerHidden !== undefined && typeof preferences.miniPlayerHidden !== 'boolean')) {
         throw new Error('Invalid Quran preferences in backup.');
       }
     } else if (/^pomodoro_stats_\d{4}-\d{2}-\d{2}$/.test(key)) {
@@ -712,6 +775,8 @@ export default function App() {
   const [plannedSession, setPlannedSession] = useState<PlannedSession | null>(savedTimer?.plannedSession || null);
   const [plannerHours, setPlannerHours] = useState(2);
   const [plannerBreakCount, setPlannerBreakCount] = useState(2);
+  const [plannerBreakDuration, setPlannerBreakDuration] = useState(5);
+  const [plannerDurationMode, setPlannerDurationMode] = useState<PlannerDurationMode>('focus-only');
   const [reportPeriod, setReportPeriod] = useState<ReportPeriod>('week');
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date();
@@ -838,8 +903,36 @@ export default function App() {
     return () => window.removeEventListener('message', receiveTheme);
   }, []);
 
+  const plannerTotalMinutes = Math.round(plannerHours * 60);
+  const maximumPlannerBreakDuration = getMaximumPlannerBreakDuration(
+    plannerTotalMinutes,
+    plannerDurationMode,
+  );
+  const selectedPlannerBreakDuration = Math.min(plannerBreakDuration, maximumPlannerBreakDuration);
+  const maximumPlannerBreaks = getMaximumPlannerBreaks(
+    plannerTotalMinutes,
+    plannerDurationMode,
+    selectedPlannerBreakDuration,
+  );
+  const selectedPlannerBreakCount = selectedPlannerBreakDuration === 0
+    ? 0
+    : Math.min(plannerBreakCount, maximumPlannerBreaks);
+  const plannerFocusMinutes = plannerDurationMode === 'focus-only'
+    ? plannerTotalMinutes
+    : plannerTotalMinutes - selectedPlannerBreakCount * selectedPlannerBreakDuration;
+  const plannerElapsedMinutes = plannerFocusMinutes + selectedPlannerBreakCount * selectedPlannerBreakDuration;
+  const plannerFocusBlocks = distributeFocusMinutes(plannerFocusMinutes, selectedPlannerBreakCount + 1);
+  const updatePlannerBreakDuration = (duration: number) => {
+    const nextDuration = Math.max(0, Math.min(maximumPlannerBreakDuration, Math.floor(duration)));
+    setPlannerBreakDuration(nextDuration);
+    setPlannerBreakCount((count) => nextDuration === 0
+      ? 0
+      : Math.min(count, getMaximumPlannerBreaks(plannerTotalMinutes, plannerDurationMode, nextDuration)));
+  };
   const totalTime = plannedSession?.isActive
-    ? (plannedSession.currentPhase === 'break' ? plannedSession.breakDuration : plannedSession.timePerTask) * 60
+    ? (plannedSession.currentPhase === 'break'
+      ? plannedSession.breakDuration
+      : getFocusBlockMinutes(plannedSession)) * 60
     : settings[mode === 'shortBreak' ? 'shortBreak' : mode === 'longBreak' ? 'longBreak' : 'focus'] * 60;
   const progress = totalTime > 0 ? (totalTime - timeLeft) / totalTime : 0;
 
@@ -879,10 +972,13 @@ export default function App() {
       intervalRef.current = null;
     }
 
-    if (view === 'planner' && plannedSession?.isActive) {
+    if (plannedSession?.isActive) {
       playNotification();
       if (plannedSession.currentPhase === 'focus') {
-        recordFocusCompletion(plannedSession.timePerTask);
+        const completedFocusBlocks = getCompletedFocusBlocks(plannedSession);
+        const completedFocusBreaks = getCompletedBreaks(plannedSession);
+        const focusBlockCount = plannedSession.focusBlockMinutes?.length ?? plannedSession.breakCount + 1;
+        recordFocusCompletion(getFocusBlockMinutes(plannedSession, completedFocusBlocks));
         setStats(loadStats());
         setSessionsCompleted((completed) => {
           const updated = completed + 1;
@@ -890,19 +986,24 @@ export default function App() {
           return updated;
         });
         setActivityEvents(loadActivityEvents());
-        const nextIndex = plannedSession.currentTaskIndex + 1;
-        if (nextIndex >= plannedSession.tasks.length) {
-          setPlannedSession({ ...plannedSession, isActive: false, phaseTimeLeft: 0 });
+        const nextCompletedFocusBlocks = completedFocusBlocks + 1;
+        if (nextCompletedFocusBlocks >= focusBlockCount) {
+          setPlannedSession({
+            ...plannedSession,
+            isActive: false,
+            phaseTimeLeft: 0,
+            completedFocusBlocks: nextCompletedFocusBlocks,
+          });
           deadlineRef.current = null;
           return;
         }
-        if (plannedSession.breaksDone < plannedSession.breakCount) {
+        if (completedFocusBreaks < plannedSession.breakCount) {
           const nextSession = {
             ...plannedSession,
             currentPhase: 'break' as const,
             phaseTimeLeft: plannedSession.breakDuration * 60,
-            breaksDone: plannedSession.breaksDone + 1,
-            pendingTaskIndex: nextIndex,
+            breaksDone: completedFocusBreaks,
+            completedFocusBlocks: nextCompletedFocusBlocks,
           };
           setPlannedSession(nextSession);
           setTimeLeft(nextSession.phaseTimeLeft);
@@ -911,9 +1012,9 @@ export default function App() {
         } else {
           const nextSession = {
             ...plannedSession,
-            currentTaskIndex: nextIndex,
             currentPhase: 'focus' as const,
-            phaseTimeLeft: plannedSession.timePerTask * 60,
+            phaseTimeLeft: getFocusBlockMinutes(plannedSession, nextCompletedFocusBlocks) * 60,
+            completedFocusBlocks: nextCompletedFocusBlocks,
           };
           setPlannedSession(nextSession);
           setTimeLeft(nextSession.phaseTimeLeft);
@@ -921,11 +1022,17 @@ export default function App() {
           setIsRunning(true);
         }
       } else {
+        const completedFocusBlocks = getCompletedFocusBlocks(plannedSession);
+        const nextFocusBlockIndex = plannedSession.completedFocusBlocks === undefined
+          ? completedFocusBlocks + 1
+          : completedFocusBlocks;
+        const completedBreaks = getCompletedBreaks(plannedSession) + 1;
         const nextSession = {
           ...plannedSession,
-          currentTaskIndex: plannedSession.pendingTaskIndex,
+          breaksDone: completedBreaks,
           currentPhase: 'focus' as const,
-          phaseTimeLeft: plannedSession.timePerTask * 60,
+          phaseTimeLeft: getFocusBlockMinutes(plannedSession, nextFocusBlockIndex) * 60,
+          completedFocusBlocks: nextFocusBlockIndex,
         };
         setPlannedSession(nextSession);
         setTimeLeft(nextSession.phaseTimeLeft);
@@ -961,7 +1068,7 @@ export default function App() {
       setTimeLeft(settings.focus * 60);
     }
     deadlineRef.current = null;
-  }, [mode, sessionsCompleted, settings, view, plannedSession]);
+  }, [mode, sessionsCompleted, settings, plannedSession]);
 
   const playNotification = () => {
     try {
@@ -996,7 +1103,7 @@ export default function App() {
         if (deadlineRef.current === null) return;
         const remaining = Math.max(0, Math.ceil((deadlineRef.current - Date.now()) / 1000));
         setTimeLeft(remaining);
-        if (view === 'planner' && plannedSession?.isActive) {
+        if (plannedSession?.isActive) {
           setPlannedSession((session) => session ? { ...session, phaseTimeLeft: remaining } : session);
         }
         if (remaining === 0) handleTimerComplete();
@@ -1033,16 +1140,17 @@ export default function App() {
   const handleReset = () => {
     setIsRunning(false);
     deadlineRef.current = null;
-    if (view === 'planner' && plannedSession?.isActive) {
+    if (plannedSession?.isActive) {
       setPlannedSession({
         ...plannedSession,
         currentTaskIndex: 0,
         currentPhase: 'focus',
-        phaseTimeLeft: plannedSession.timePerTask * 60,
+        phaseTimeLeft: getFocusBlockMinutes(plannedSession, 0) * 60,
         breaksDone: 0,
+        completedFocusBlocks: 0,
         pendingTaskIndex: 0,
       });
-      setTimeLeft(plannedSession.timePerTask * 60);
+      setTimeLeft(getFocusBlockMinutes(plannedSession, 0) * 60);
       return;
     }
     const duration = settings[mode === 'shortBreak' ? 'shortBreak' : mode === 'longBreak' ? 'longBreak' : 'focus'];
@@ -1178,25 +1286,46 @@ export default function App() {
     setPlannerTasks((tasks) => tasks.filter((task) => task.id !== id));
   };
 
+  const movePlannerTask = (id: string, offset: -1 | 1) => {
+    setPlannerTasks((tasks) => {
+      const currentIndex = tasks.findIndex((task) => task.id === id);
+      const nextIndex = currentIndex + offset;
+      if (currentIndex < 0 || nextIndex < 0 || nextIndex >= tasks.length) return tasks;
+      const reordered = [...tasks];
+      [reordered[currentIndex], reordered[nextIndex]] = [reordered[nextIndex], reordered[currentIndex]];
+      return reordered;
+    });
+  };
+
   const togglePlannedTask = (id: string) => {
     const task = plannedSession?.tasks.find((item) => item.id === id);
     if (task) logActivity({ type: task.completed ? 'task_uncompleted' : 'task_completed', taskId: id });
     setPlannedSession((session) => {
       if (!session) return session;
+      const tasks = session.tasks.map((item) => item.id === id ? { ...item, completed: !item.completed } : item);
+      let currentTaskIndex = session.currentTaskIndex;
+      if (session.currentTaskIndex === session.tasks.findIndex((item) => item.id === id) &&
+        tasks[currentTaskIndex]?.completed) {
+        const nextIncompleteIndex = tasks.findIndex((item, index) => index > currentTaskIndex && !item.completed);
+        const firstIncompleteIndex = tasks.findIndex((item) => !item.completed);
+        currentTaskIndex = nextIncompleteIndex >= 0
+          ? nextIncompleteIndex
+          : firstIncompleteIndex >= 0 ? firstIncompleteIndex : currentTaskIndex;
+      }
       return {
         ...session,
-        tasks: session.tasks.map((task) => task.id === id ? { ...task, completed: !task.completed } : task),
+        tasks,
+        currentTaskIndex,
       };
     });
   };
 
   const startPlannedSession = () => {
     if (plannerTasks.length === 0) return;
-    const totalMinutes = plannerHours * 60;
-    const breakDuration = 5;
-    const effectiveBreakCount = Math.min(plannerBreakCount, plannerTasks.length - 1);
-    const focusTime = totalMinutes - effectiveBreakCount * breakDuration;
-    const timePerTask = Math.max(1, Math.floor(focusTime / plannerTasks.length));
+    const effectiveBreakCount = selectedPlannerBreakCount;
+    const breakDuration = selectedPlannerBreakDuration;
+    const focusBlockMinutes = plannerFocusBlocks;
+    const timePerTask = Math.max(1, Math.floor(plannerFocusMinutes / plannerTasks.length));
     const sessionId = `${Date.now()}-${Math.random()}`;
     const sessionTasks = plannerTasks.map((task) => ({
       ...task,
@@ -1207,19 +1336,21 @@ export default function App() {
     const nextSession: PlannedSession = {
       tasks: sessionTasks,
       timePerTask,
+      focusBlockMinutes,
+      completedFocusBlocks: 0,
       breakDuration,
       currentTaskIndex: 0,
       currentPhase: 'focus',
       isActive: true,
-      phaseTimeLeft: timePerTask * 60,
+      phaseTimeLeft: focusBlockMinutes[0] * 60,
       breaksDone: 0,
       breakCount: effectiveBreakCount,
       pendingTaskIndex: 0,
     };
     setPlannedSession(nextSession);
-    setTimeLeft(timePerTask * 60);
+    setTimeLeft(focusBlockMinutes[0] * 60);
     setView('timer');
-    deadlineRef.current = Date.now() + timePerTask * 60 * 1000;
+    deadlineRef.current = Date.now() + focusBlockMinutes[0] * 60 * 1000;
     setIsRunning(true);
   };
 
@@ -1385,7 +1516,9 @@ export default function App() {
           <span className="text-gray-400 text-sm mt-2 uppercase tracking-wide">
             {plannedSession?.isActive
               ? plannedSession.currentPhase === 'focus'
-                ? `${t.workingOn}: ${plannedSession.tasks[plannedSession.currentTaskIndex]?.text || ''}`
+                ? plannedSession.tasks.every((task) => task.completed)
+                  ? t.allTasksComplete
+                  : `${t.workingOn}: ${plannedSession.tasks[plannedSession.currentTaskIndex]?.text || ''}`
                 : t.breakTime
               : mode === 'focus' ? t.focus : mode === 'shortBreak' ? t.shortBreak : t.longBreak}
           </span>
@@ -1454,6 +1587,7 @@ export default function App() {
                 key={task.id}
                 type="button"
                 onClick={() => togglePlannedTask(task.id)}
+                aria-pressed={task.completed}
                 className={`w-full flex items-center gap-3 p-2 rounded-lg text-left ${
                   index === plannedSession.currentTaskIndex ? 'bg-red-50 border border-red-100' : ''
                 }`}
@@ -1580,31 +1714,121 @@ export default function App() {
               max="8"
               step="0.5"
               value={plannerHours}
-              onChange={(event) => setPlannerHours(Number(event.target.value))}
+              onChange={(event) => {
+                const nextHours = Number(event.target.value);
+                setPlannerHours(nextHours);
+                setPlannerBreakCount((count) => Math.min(
+                  count,
+                  getMaximumPlannerBreaks(
+                    Math.round(nextHours * 60),
+                    plannerDurationMode,
+                    selectedPlannerBreakDuration,
+                  ),
+                ));
+              }}
               className="flex-1 accent-red-500"
             />
             <span className="font-bold text-gray-800 min-w-[82px] text-right">{formatDuration(plannerHours * 60)}</span>
           </div>
+          <fieldset className="mb-4">
+            <legend className="block text-sm font-medium text-gray-700 mb-2">{t.durationRule}</legend>
+            <div className="space-y-2 rounded-lg bg-gray-50 p-3">
+              <label className="flex items-start gap-2 text-sm text-gray-700">
+                <input
+                  type="radio"
+                  name="planner-duration-mode"
+                  value="focus-only"
+                  checked={plannerDurationMode === 'focus-only'}
+                  onChange={() => setPlannerDurationMode('focus-only')}
+                  className="mt-1 accent-red-500"
+                />
+                <span>{t.focusOnlyOption}</span>
+              </label>
+              <label className="flex items-start gap-2 text-sm text-gray-700">
+                <input
+                  type="radio"
+                  name="planner-duration-mode"
+                  value="elapsed-total"
+                  checked={plannerDurationMode === 'elapsed-total'}
+                  onChange={() => {
+                    setPlannerDurationMode('elapsed-total');
+                    setPlannerBreakCount((count) => Math.min(
+                      count,
+                      getMaximumPlannerBreaks(
+                        plannerTotalMinutes,
+                        'elapsed-total',
+                        selectedPlannerBreakDuration,
+                      ),
+                    ));
+                  }}
+                  className="mt-1 accent-red-500"
+                />
+                <span>{t.elapsedTotalOption}</span>
+              </label>
+            </div>
+          </fieldset>
           <label className="block text-sm font-medium text-gray-700 mb-2">{t.breakCount}</label>
           <div className="flex items-center gap-3 mb-4">
             <input
               type="range"
               min="0"
-              max="10"
+              max={maximumPlannerBreaks}
               step="1"
-              value={plannerBreakCount}
-              onChange={(event) => setPlannerBreakCount(Math.max(0, Math.min(10, Number(event.target.value))))}
+              value={selectedPlannerBreakCount}
+              onChange={(event) => {
+                const nextCount = Math.max(0, Math.min(maximumPlannerBreaks, Number(event.target.value)));
+                setPlannerBreakCount(nextCount);
+                if (nextCount > 0 && plannerBreakDuration === 0) setPlannerBreakDuration(5);
+              }}
               className="flex-1 accent-emerald-500"
             />
             <input
               type="number"
               min="0"
-              max="10"
-              value={plannerBreakCount}
-              onChange={(event) => setPlannerBreakCount(Math.max(0, Math.min(10, Number(event.target.value) || 0)))}
+              max={maximumPlannerBreaks}
+              value={selectedPlannerBreakCount}
+              onChange={(event) => {
+                const nextCount = Math.max(0, Math.min(maximumPlannerBreaks, Number(event.target.value) || 0));
+                setPlannerBreakCount(nextCount);
+                if (nextCount > 0 && plannerBreakDuration === 0) setPlannerBreakDuration(5);
+              }}
               className="w-16 px-2 py-1 border border-gray-200 rounded-lg text-center font-bold"
               aria-label={t.breakCount}
             />
+          </div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">{t.breakDuration}</label>
+          <div className="flex items-center gap-3 mb-2">
+            <input
+              type="range"
+              min="0"
+              max={maximumPlannerBreakDuration}
+              step="1"
+              value={selectedPlannerBreakDuration}
+              disabled={selectedPlannerBreakCount === 0}
+              onChange={(event) => updatePlannerBreakDuration(Number(event.target.value))}
+              className="flex-1 accent-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+            />
+            <input
+              type="number"
+              min="0"
+              max={maximumPlannerBreakDuration}
+              step="1"
+              value={selectedPlannerBreakDuration}
+              disabled={selectedPlannerBreakCount === 0}
+              onChange={(event) => updatePlannerBreakDuration(Number(event.target.value) || 0)}
+              className="w-16 px-2 py-1 border border-gray-200 rounded-lg text-center font-bold disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label={t.breakDuration}
+            />
+            <span className="text-xs text-gray-500">{t.minutesShort}</span>
+          </div>
+          <p className="text-xs text-gray-500 mb-3">{t.breakDurationHint}</p>
+          <p className="text-xs text-gray-500 mb-3">{t.breakScheduleHint}</p>
+          <div className="planner-time-estimate rounded-lg border border-emerald-100 bg-emerald-50 p-3 mb-4 text-sm">
+            <p>{t.focusTime}: <strong>{formatDuration(plannerFocusMinutes)}</strong></p>
+            {selectedPlannerBreakCount > 0 && (
+              <p>{t.breakCount}: <strong>{selectedPlannerBreakCount} × {formatDuration(selectedPlannerBreakDuration)}</strong></p>
+            )}
+            <p className="mt-1">{t.estimatedTotal}: <strong>{formatDuration(plannerElapsedMinutes)}</strong></p>
           </div>
           <label className="block text-sm font-medium text-gray-700 mb-2">{t.tasksToComplete}</label>
           <div className="flex gap-2 mb-3">
@@ -1620,17 +1844,48 @@ export default function App() {
           {plannerTasks.length > 0 && (
             <div className="space-y-2 mb-4">
               {plannerTasks.map((task, index) => (
-                <div key={task.id} className="flex items-center gap-3 p-2.5 bg-gray-50 rounded-lg">
+                <div key={task.id} className="planner-task-row flex items-center gap-3 p-2.5 bg-gray-50 rounded-lg">
                   <span className="w-6 h-6 rounded-full bg-red-100 text-red-600 flex items-center justify-center text-xs font-bold">{index + 1}</span>
                   <span className="flex-1 text-sm text-gray-700">{task.text}</span>
-                  <button onClick={() => removePlannerTask(task.id)} className="text-gray-400">×</button>
+                  <button
+                    type="button"
+                    onClick={() => movePlannerTask(task.id, -1)}
+                    disabled={index === 0}
+                    className="planner-task-order-button"
+                    aria-label={`${t.moveTaskUp}: ${task.text}`}
+                    title={t.moveTaskUp}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => movePlannerTask(task.id, 1)}
+                    disabled={index === plannerTasks.length - 1}
+                    className="planner-task-order-button"
+                    aria-label={`${t.moveTaskDown}: ${task.text}`}
+                    title={t.moveTaskDown}
+                  >
+                    ↓
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removePlannerTask(task.id)}
+                    className="planner-task-remove-button"
+                    aria-label={`${t.removePlannerTask}: ${task.text}`}
+                  >
+                    ×
+                  </button>
                 </div>
               ))}
             </div>
           )}
           {plannedSession?.isActive && (
             <div className="mb-4 p-3 rounded-lg bg-red-50 text-sm text-red-700">
-              {plannedSession.currentPhase === 'focus' ? t.workingOn : t.breakTime}: {plannedSession.currentPhase === 'focus' ? plannedSession.tasks[plannedSession.currentTaskIndex]?.text : ''}
+              {plannedSession.currentPhase === 'focus'
+                ? plannedSession.tasks.every((task) => task.completed)
+                  ? t.allTasksComplete
+                  : `${t.workingOn}: ${plannedSession.tasks[plannedSession.currentTaskIndex]?.text || ''}`
+                : t.breakTime}
             </div>
           )}
           {plannedSession && !plannedSession.isActive && (

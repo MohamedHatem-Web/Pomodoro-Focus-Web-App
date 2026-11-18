@@ -122,6 +122,29 @@ button:active {
   border-color: #374151;
 }
 
+.app-shell.dark .planner-time-estimate {
+  border-color: #28523e;
+  color: #d1fae5;
+  background: #172a22;
+}
+
+.app-shell.dark .planner-task-order-button,
+.app-shell.dark .planner-task-remove-button {
+  border-color: #4b5563;
+  color: #d1d5db;
+  background: #1f2937;
+}
+
+.app-shell.dark .planner-task-order-button:hover:not(:disabled),
+.app-shell.dark .planner-task-remove-button:hover {
+  border-color: #6b7280;
+  background: #374151;
+}
+
+.app-shell.dark .planner-task-remove-button:hover {
+  color: #fca5a5;
+}
+
 .app-shell.dark .theme-toggle,
 .app-shell.dark input {
   background: #1f2937;
@@ -133,6 +156,38 @@ button:active {
   background: #ffffff;
   border-color: #e5e7eb;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.planner-time-estimate {
+  color: #365448;
+}
+
+.planner-task-order-button,
+.planner-task-remove-button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  place-items: center;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  color: #475569;
+  background: #ffffff;
+}
+
+.planner-task-order-button:hover:not(:disabled),
+.planner-task-remove-button:hover {
+  border-color: #cbd5e1;
+  background: #f1f5f9;
+}
+
+.planner-task-order-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.planner-task-remove-button:hover {
+  color: #dc2626;
 }
 
 .goal-stepper-control {
@@ -1376,20 +1431,24 @@ button:active {
 
 .quran-mini-open,
 .quran-mini-float,
-.quran-mini-favorite {
+.quran-mini-favorite,
+.quran-mini-close {
   display: grid;
   flex: 0 0 32px;
   width: 32px;
   height: 32px;
   place-items: center;
+  border: 0;
   border-radius: 0.6rem;
   color: #d7dfd7;
   background: rgba(255, 255, 255, 0.08);
+  cursor: pointer;
 }
 
 .quran-mini-open:hover,
 .quran-mini-float:hover,
 .quran-mini-favorite:hover,
+.quran-mini-close:hover,
 .quran-mini-favorite.is-active {
   color: #f0d98f;
   background: rgba(255, 255, 255, 0.14);

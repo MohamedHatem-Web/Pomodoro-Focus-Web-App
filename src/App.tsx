@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { translations, Language } from './i18n';
 
 // Types
 type TimerMode = 'focus' | 'shortBreak' | 'longBreak';
 type Theme = 'light' | 'dark';
+type View = 'timer' | 'planner';
 
 interface TimerSettings {
   focus: number;
@@ -15,6 +17,34 @@ interface DailyStats {
   date: string;
   focusSessions: number;
   totalFocusMinutes: number;
+}
+
+interface TodoTask {
+  id: string;
+  text: string;
+  completed: boolean;
+}
+
+interface PlannedSession {
+  tasks: TodoTask[];
+  timePerTask: number;
+  breakDuration: number;
+  currentTaskIndex: number;
+  currentPhase: 'focus' | 'break';
+  isActive: boolean;
+  phaseTimeLeft: number;
+  breaksDone: number;
+  breakCount: number;
+  pendingTaskIndex: number;
+}
+
+interface SavedTimerState {
+  mode: TimerMode;
+  timeLeft: number;
+  isRunning: boolean;
+  deadline: number | null;
+  view: View;
+  plannedSession: PlannedSession | null;
 }
 
 // Helper functions
@@ -77,6 +107,38 @@ function loadTheme(): Theme {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
+function loadLanguage(): Language {
+  const saved = localStorage.getItem('pomodoro_lang');
+  return saved === 'ar' ? 'ar' : 'en';
+}
+
+function loadTodos(): TodoTask[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem('pomodoro_todos') || '[]');
+    return Array.isArray(saved) ? saved : [];
+  } catch {
+    return [];
+  }
+
+  function loadSavedTimerState(): SavedTimerState | null {
+    try {
+      const saved = JSON.parse(localStorage.getItem('pomodoro_timer_state') || 'null');
+      return saved && typeof saved === 'object' ? saved as SavedTimerState : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function formatDuration(minutes: number): string {
+    const rounded = Math.round(minutes * 2) / 2;
+    const hours = Math.floor(rounded);
+    const remainingMinutes = Math.round((rounded - hours) * 60);
+    if (hours && remainingMinutes) return `${hours}h ${remainingMinutes}m`;
+    if (hours) return `${hours}h`;
+    return `${remainingMinutes}m`;
+  }
+}
+
 function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
@@ -109,28 +171,48 @@ const modeConfig: Record<TimerMode, { label: string; color: string; bgColor: str
 };
 
 export default function App() {
+  const [savedTimer] = useState<SavedTimerState | null>(loadSavedTimerState);
   const [settings, setSettings] = useState<TimerSettings>(loadSettings);
   const [theme, setTheme] = useState<Theme>(loadTheme);
-  const [mode, setMode] = useState<TimerMode>('focus');
-  const [timeLeft, setTimeLeft] = useState(settings.focus * 60);
-  const [isRunning, setIsRunning] = useState(false);
+  const [language, setLanguage] = useState<Language>(loadLanguage);
+  const [view, setView] = useState<View>(savedTimer?.view || 'timer');
+  const [mode, setMode] = useState<TimerMode>(savedTimer?.mode || 'focus');
+  const [timeLeft, setTimeLeft] = useState(() => {
+    if (!savedTimer) return settings.focus * 60;
+    if (savedTimer.isRunning && savedTimer.deadline) {
+      return Math.max(0, Math.ceil((savedTimer.deadline - Date.now()) / 1000));
+    }
+    return savedTimer.timeLeft;
+  });
+  const [isRunning, setIsRunning] = useState(() => Boolean(savedTimer?.isRunning));
   const [sessionsCompleted, setSessionsCompleted] = useState(loadSessionsCompleted);
   const [stats, setStats] = useState<DailyStats>(loadStats);
   const [showSettings, setShowSettings] = useState(false);
   const [tempSettings, setTempSettings] = useState<TimerSettings>(settings);
+  const [todos, setTodos] = useState<TodoTask[]>(loadTodos);
+  const [newTodo, setNewTodo] = useState('');
+  const [plannedSession, setPlannedSession] = useState<PlannedSession | null>(savedTimer?.plannedSession || null);
+  const [plannerHours, setPlannerHours] = useState(2);
+  const [plannerBreakCount, setPlannerBreakCount] = useState(2);
+  const [plannerTasks, setPlannerTasks] = useState<TodoTask[]>([]);
+  const [plannerNewTask, setPlannerNewTask] = useState('');
   const intervalRef = useRef<number | null>(null);
-  const deadlineRef = useRef<number | null>(null);
+  const deadlineRef = useRef<number | null>(savedTimer?.deadline || null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const t = translations[language];
 
   useEffect(() => {
     document.documentElement.classList.remove('light', 'dark');
     document.documentElement.classList.add(theme);
     document.documentElement.setAttribute('data-theme', theme);
+    document.documentElement.setAttribute('dir', language === 'ar' ? 'rtl' : 'ltr');
+    document.documentElement.setAttribute('lang', language);
     localStorage.setItem('pomodoro_theme', theme);
+    localStorage.setItem('pomodoro_lang', language);
 
     const themeColor = document.querySelector('meta[name="theme-color"]');
     themeColor?.setAttribute('content', theme === 'dark' ? '#111827' : '#ffffff');
-  }, [theme]);
+  }, [theme, language]);
 
   useEffect(() => {
     if (window.self === window.top) return;
@@ -144,19 +226,95 @@ export default function App() {
     return () => window.removeEventListener('message', receiveTheme);
   }, []);
 
-  const totalTime = settings[mode === 'shortBreak' ? 'shortBreak' : mode === 'longBreak' ? 'longBreak' : 'focus'] * 60;
-  const progress = (totalTime - timeLeft) / totalTime;
+  const totalTime = plannedSession?.isActive
+    ? (plannedSession.currentPhase === 'break' ? plannedSession.breakDuration : plannedSession.timePerTask) * 60
+    : settings[mode === 'shortBreak' ? 'shortBreak' : mode === 'longBreak' ? 'longBreak' : 'focus'] * 60;
+  const progress = totalTime > 0 ? (totalTime - timeLeft) / totalTime : 0;
 
   // Save settings when they change
   useEffect(() => {
     saveSettings(settings);
   }, [settings]);
 
+  useEffect(() => {
+    localStorage.setItem('pomodoro_todos', JSON.stringify(todos));
+  }, [todos]);
+
+  useEffect(() => {
+    const state: SavedTimerState = {
+      mode,
+      timeLeft,
+      isRunning,
+      deadline: isRunning ? deadlineRef.current : null,
+      view,
+      plannedSession,
+    };
+    localStorage.setItem('pomodoro_timer_state', JSON.stringify(state));
+  }, [mode, timeLeft, isRunning, view, plannedSession]);
+
   const handleTimerComplete = useCallback(() => {
     setIsRunning(false);
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
+    }
+
+    if (view === 'planner' && plannedSession?.isActive) {
+      playNotification();
+      if (plannedSession.currentPhase === 'focus') {
+        const nextIndex = plannedSession.currentTaskIndex + 1;
+        if (nextIndex >= plannedSession.tasks.length) {
+          const newStats = { ...stats };
+          newStats.focusSessions += plannedSession.tasks.length;
+          newStats.totalFocusMinutes += plannedSession.timePerTask * plannedSession.tasks.length;
+          setStats(newStats);
+          saveStats(newStats);
+          setSessionsCompleted((completed) => {
+            const updated = completed + plannedSession.tasks.length;
+            localStorage.setItem('pomodoro_sessions_completed', String(updated));
+            return updated;
+          });
+          setPlannedSession({ ...plannedSession, isActive: false, phaseTimeLeft: 0 });
+          deadlineRef.current = null;
+          return;
+        }
+        if (plannedSession.breaksDone < plannedSession.breakCount) {
+          const nextSession = {
+            ...plannedSession,
+            currentPhase: 'break' as const,
+            phaseTimeLeft: plannedSession.breakDuration * 60,
+            breaksDone: plannedSession.breaksDone + 1,
+            pendingTaskIndex: nextIndex,
+          };
+          setPlannedSession(nextSession);
+          setTimeLeft(nextSession.phaseTimeLeft);
+          deadlineRef.current = Date.now() + nextSession.phaseTimeLeft * 1000;
+          setIsRunning(true);
+        } else {
+          const nextSession = {
+            ...plannedSession,
+            currentTaskIndex: nextIndex,
+            currentPhase: 'focus' as const,
+            phaseTimeLeft: plannedSession.timePerTask * 60,
+          };
+          setPlannedSession(nextSession);
+          setTimeLeft(nextSession.phaseTimeLeft);
+          deadlineRef.current = Date.now() + nextSession.phaseTimeLeft * 1000;
+          setIsRunning(true);
+        }
+      } else {
+        const nextSession = {
+          ...plannedSession,
+          currentTaskIndex: plannedSession.pendingTaskIndex,
+          currentPhase: 'focus' as const,
+          phaseTimeLeft: plannedSession.timePerTask * 60,
+        };
+        setPlannedSession(nextSession);
+        setTimeLeft(nextSession.phaseTimeLeft);
+        deadlineRef.current = Date.now() + nextSession.phaseTimeLeft * 1000;
+        setIsRunning(true);
+      }
+      return;
     }
 
     if (mode === 'focus') {
@@ -189,7 +347,7 @@ export default function App() {
       setTimeLeft(settings.focus * 60);
     }
     deadlineRef.current = null;
-  }, [mode, sessionsCompleted, settings, stats]);
+  }, [mode, sessionsCompleted, settings, stats, view, plannedSession]);
 
   const playNotification = () => {
     try {
@@ -224,6 +382,9 @@ export default function App() {
         if (deadlineRef.current === null) return;
         const remaining = Math.max(0, Math.ceil((deadlineRef.current - Date.now()) / 1000));
         setTimeLeft(remaining);
+        if (view === 'planner' && plannedSession?.isActive) {
+          setPlannedSession((session) => session ? { ...session, phaseTimeLeft: remaining } : session);
+        }
         if (remaining === 0) handleTimerComplete();
       }, 250);
     } else if (intervalRef.current) {
@@ -258,6 +419,18 @@ export default function App() {
   const handleReset = () => {
     setIsRunning(false);
     deadlineRef.current = null;
+    if (view === 'planner' && plannedSession?.isActive) {
+      setPlannedSession({
+        ...plannedSession,
+        currentTaskIndex: 0,
+        currentPhase: 'focus',
+        phaseTimeLeft: plannedSession.timePerTask * 60,
+        breaksDone: 0,
+        pendingTaskIndex: 0,
+      });
+      setTimeLeft(plannedSession.timePerTask * 60);
+      return;
+    }
     const duration = settings[mode === 'shortBreak' ? 'shortBreak' : mode === 'longBreak' ? 'longBreak' : 'focus'];
     setTimeLeft(duration * 60);
   };
@@ -285,6 +458,66 @@ export default function App() {
     setShowSettings(true);
   };
 
+  const addTodo = () => {
+    if (!newTodo.trim()) return;
+    setTodos((tasks) => [...tasks, { id: `${Date.now()}`, text: newTodo.trim(), completed: false }]);
+    setNewTodo('');
+  };
+
+  const toggleTodo = (id: string) => {
+    setTodos((tasks) => tasks.map((task) => task.id === id ? { ...task, completed: !task.completed } : task));
+  };
+
+  const deleteTodo = (id: string) => {
+    setTodos((tasks) => tasks.filter((task) => task.id !== id));
+  };
+
+  const addPlannerTask = () => {
+    if (!plannerNewTask.trim()) return;
+    setPlannerTasks((tasks) => [...tasks, { id: `${Date.now()}`, text: plannerNewTask.trim(), completed: false }]);
+    setPlannerNewTask('');
+  };
+
+  const removePlannerTask = (id: string) => {
+    setPlannerTasks((tasks) => tasks.filter((task) => task.id !== id));
+  };
+
+  const togglePlannedTask = (id: string) => {
+    setPlannedSession((session) => {
+      if (!session) return session;
+      return {
+        ...session,
+        tasks: session.tasks.map((task) => task.id === id ? { ...task, completed: !task.completed } : task),
+      };
+    });
+  };
+
+  const startPlannedSession = () => {
+    if (plannerTasks.length === 0) return;
+    const totalMinutes = plannerHours * 60;
+    const breakDuration = 5;
+    const effectiveBreakCount = Math.min(plannerBreakCount, plannerTasks.length - 1);
+    const focusTime = totalMinutes - effectiveBreakCount * breakDuration;
+    const timePerTask = Math.max(1, Math.floor(focusTime / plannerTasks.length));
+    const nextSession: PlannedSession = {
+      tasks: [...plannerTasks],
+      timePerTask,
+      breakDuration,
+      currentTaskIndex: 0,
+      currentPhase: 'focus',
+      isActive: true,
+      phaseTimeLeft: timePerTask * 60,
+      breaksDone: 0,
+      breakCount: effectiveBreakCount,
+      pendingTaskIndex: 0,
+    };
+    setPlannedSession(nextSession);
+    setTimeLeft(timePerTask * 60);
+    setView('timer');
+    deadlineRef.current = Date.now() + timePerTask * 60 * 1000;
+    setIsRunning(true);
+  };
+
   // SVG circle parameters
   const radius = 140;
   const circumference = 2 * Math.PI * radius;
@@ -294,24 +527,52 @@ export default function App() {
 
   return (
     <div className={`min-h-screen app-shell flex flex-col items-center justify-center p-4 font-sans ${theme}`}>
-      {/* Header */}
-      <div className="text-center mb-6 relative w-full max-w-md">
+      <div className="w-full max-w-md flex justify-between items-center mb-4">
+        <button
+          type="button"
+          onClick={() => setLanguage(language === 'en' ? 'ar' : 'en')}
+          className="theme-toggle px-3 py-2 rounded-lg border flex items-center gap-2 text-sm font-medium"
+        >
+          <span>{language === 'en' ? '🇪🇬' : '🇺🇸'}</span>
+          <span>{language === 'en' ? 'عربي' : 'English'}</span>
+        </button>
         <button
           type="button"
           onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-          className="theme-toggle absolute right-0 top-0 w-10 h-10 rounded-full border flex items-center justify-center"
+          className="theme-toggle w-10 h-10 rounded-full border flex items-center justify-center"
           aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-          title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
         >
           {theme === 'dark' ? '☀️' : '🌙'}
         </button>
-        <h1 className="text-3xl font-bold app-heading flex items-center justify-center gap-2">
-          <span className="text-2xl">🍅</span> <span>Pomodoro Focus</span>
-        </h1>
-        <p className="text-gray-500 text-sm mt-1">Stay focused, take breaks, be productive</p>
       </div>
 
+      {/* Header */}
+      <div className="text-center mb-6 w-full max-w-md">
+        <h1 className="text-3xl font-bold app-heading flex items-center justify-center gap-2">
+          <span className="text-2xl">🍅</span> <span>{t.title}</span>
+        </h1>
+        <p className="text-gray-500 text-sm mt-1">{t.subtitle}</p>
+      </div>
+
+      <div className="flex gap-2 mb-6 bg-white rounded-xl p-1.5 shadow-sm border border-gray-100">
+        <button
+          onClick={() => setView('timer')}
+          className={`px-5 py-2 rounded-lg text-sm font-medium ${view === 'timer' ? 'bg-gray-800 text-white' : 'text-gray-600'}`}
+        >
+          {t.timer}
+        </button>
+        <button
+          onClick={() => setView('planner')}
+          className={`px-5 py-2 rounded-lg text-sm font-medium ${view === 'planner' ? 'bg-gray-800 text-white' : 'text-gray-600'}`}
+        >
+          {t.planner}
+        </button>
+      </div>
+
+      {view === 'timer' && (
+        <>
       {/* Mode Selector */}
+      {!plannedSession?.isActive && (
       <div className="flex gap-2 mb-8 bg-white rounded-xl p-1.5 shadow-sm border border-gray-100">
         {(Object.keys(modeConfig) as TimerMode[]).map((m) => (
           <button
@@ -323,10 +584,11 @@ export default function App() {
                 : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50'
             }`}
           >
-            {modeConfig[m].label}
+            {m === 'focus' ? t.focus : m === 'shortBreak' ? t.shortBreak : t.longBreak}
           </button>
         ))}
       </div>
+      )}
 
       {/* Timer Display */}
       <div className={`relative mb-8 timer-ring ${isRunning ? 'is-running' : ''}`}>
@@ -359,7 +621,11 @@ export default function App() {
             {formatTime(timeLeft)}
           </span>
           <span className="text-gray-400 text-sm mt-2 uppercase tracking-wide">
-            {currentConfig.label}
+            {plannedSession?.isActive
+              ? plannedSession.currentPhase === 'focus'
+                ? `${t.workingOn}: ${plannedSession.tasks[plannedSession.currentTaskIndex]?.text || ''}`
+                : t.breakTime
+              : mode === 'focus' ? t.focus : mode === 'shortBreak' ? t.shortBreak : t.longBreak}
           </span>
         </div>
       </div>
@@ -376,14 +642,14 @@ export default function App() {
                 <rect x="6" y="4" width="4" height="16" rx="1" />
                 <rect x="14" y="4" width="4" height="16" rx="1" />
               </svg>
-              Pause
+              {t.pause}
             </span>
           ) : (
             <span className="flex items-center gap-2">
               <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M8 5v14l11-7z" />
               </svg>
-              Start
+              {t.start}
             </span>
           )}
         </button>
@@ -395,27 +661,49 @@ export default function App() {
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
-            Reset
+            {t.reset}
           </span>
         </button>
       </div>
+
+      {plannedSession?.isActive && (
+        <div className="w-full max-w-md bg-white rounded-xl p-4 shadow-sm border border-gray-100 mb-6">
+          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">{t.tasksToComplete}</h3>
+          <div className="space-y-2">
+            {plannedSession.tasks.map((task, index) => (
+              <button
+                key={task.id}
+                type="button"
+                onClick={() => togglePlannedTask(task.id)}
+                className={`w-full flex items-center gap-3 p-2 rounded-lg text-left ${
+                  index === plannedSession.currentTaskIndex ? 'bg-red-50 border border-red-100' : ''
+                }`}
+              >
+                <span className={`w-5 h-5 rounded-full border-2 flex-shrink-0 ${task.completed ? 'bg-emerald-500 border-emerald-500' : 'border-gray-300'}`} />
+                <span className={`flex-1 text-sm ${task.completed ? 'line-through text-gray-400' : 'text-gray-700'}`}>{task.text}</span>
+                {index === plannedSession.currentTaskIndex && <span className="text-xs text-red-500">{t.workingOn}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Stats & Settings */}
       <div className="w-full max-w-md grid grid-cols-2 gap-4">
         {/* Today's Stats */}
         <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
-          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Today's Stats</h3>
+          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">{t.todaysStats}</h3>
           <div className="space-y-2">
             <div className="flex justify-between items-center">
-              <span className="text-gray-600 text-sm">Sessions</span>
+              <span className="text-gray-600 text-sm">{t.sessions}</span>
               <span className="font-bold text-gray-800">{stats.focusSessions}</span>
             </div>
             <div className="flex justify-between items-center">
-              <span className="text-gray-600 text-sm">Focus Time</span>
+              <span className="text-gray-600 text-sm">{t.focusTime}</span>
               <span className="font-bold text-gray-800">{stats.totalFocusMinutes}m</span>
             </div>
             <div className="flex justify-between items-center">
-              <span className="text-gray-600 text-sm">Completed</span>
+              <span className="text-gray-600 text-sm">{t.completed}</span>
               <span className="font-bold text-gray-800">{sessionsCompleted}</span>
             </div>
           </div>
@@ -423,18 +711,18 @@ export default function App() {
 
         {/* Quick Info / Settings Button */}
         <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
-          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Timer Info</h3>
+          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">{t.timerInfo}</h3>
           <div className="space-y-2">
             <div className="flex justify-between items-center">
-              <span className="text-gray-600 text-sm">Focus</span>
+              <span className="text-gray-600 text-sm">{t.focus}</span>
               <span className="font-bold text-gray-800">{settings.focus}m</span>
             </div>
             <div className="flex justify-between items-center">
-              <span className="text-gray-600 text-sm">Short Break</span>
+              <span className="text-gray-600 text-sm">{t.shortBreak}</span>
               <span className="font-bold text-gray-800">{settings.shortBreak}m</span>
             </div>
             <div className="flex justify-between items-center">
-              <span className="text-gray-600 text-sm">Long Break</span>
+              <span className="text-gray-600 text-sm">{t.longBreak}</span>
               <span className="font-bold text-gray-800">{settings.longBreak}m</span>
             </div>
           </div>
@@ -442,14 +730,14 @@ export default function App() {
             onClick={handleOpenSettings}
             className="mt-3 w-full text-center text-sm text-gray-500 hover:text-gray-700 transition-colors py-1 border-t border-gray-100"
           >
-            ⚙️ Customize
+            ⚙️ {t.customize}
           </button>
         </div>
       </div>
 
       {/* Session dots */}
       <div className="mt-6 flex items-center gap-2">
-        <span className="text-xs text-gray-400 mr-1">Progress:</span>
+        <span className="text-xs text-gray-400 mr-1">{t.progress}:</span>
         {Array.from({ length: settings.longBreakInterval }).map((_, i) => (
           <div
             key={i}
@@ -463,12 +751,131 @@ export default function App() {
         <span className="text-xs text-gray-400 ml-1">→ long break</span>
       </div>
 
+      <div className="w-full max-w-md bg-white rounded-xl p-4 shadow-sm border border-gray-100 mt-6">
+        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">{t.todoList}</h3>
+        <div className="flex gap-2 mb-3">
+          <input
+            value={newTodo}
+            onChange={(event) => setNewTodo(event.target.value)}
+            onKeyDown={(event) => event.key === 'Enter' && addTodo()}
+            placeholder={t.addTask}
+            className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm"
+          />
+          <button onClick={addTodo} className="px-4 py-2 bg-red-500 text-white rounded-lg text-sm">{t.add}</button>
+        </div>
+        {todos.length === 0 ? (
+          <p className="text-center text-gray-400 text-sm py-3">{t.noTasks}</p>
+        ) : (
+          <div className="space-y-2">
+            {todos.map((task) => (
+              <div key={task.id} className="flex items-center gap-3 p-2 rounded-lg">
+                <button
+                  onClick={() => toggleTodo(task.id)}
+                  className={`w-5 h-5 rounded-full border-2 ${task.completed ? 'bg-emerald-500 border-emerald-500' : 'border-gray-300'}`}
+                  aria-label={t.completed}
+                />
+                <span className={`flex-1 text-sm ${task.completed ? 'line-through text-gray-400' : 'text-gray-700'}`}>{task.text}</span>
+                <button onClick={() => deleteTodo(task.id)} className="text-gray-400 hover:text-red-500" aria-label="Delete">×</button>
+              </div>
+            ))}
+          </div>
+        )}
+        {todos.length > 0 && (
+          <button onClick={() => setTodos((tasks) => tasks.filter((task) => !task.completed))} className="mt-3 text-xs text-red-500">
+            {t.clearCompleted}
+          </button>
+        )}
+      </div>
+        </>
+      )}
+
+      {view === 'planner' && (
+        <div className="w-full max-w-md bg-white rounded-xl p-5 shadow-sm border border-gray-100 mb-6">
+          <h2 className="text-lg font-bold text-gray-800 mb-2">{t.planSession}</h2>
+          <p className="text-sm text-gray-500 mb-4">{t.planDesc}</p>
+          <label className="block text-sm font-medium text-gray-700 mb-2">{t.totalDuration}</label>
+          <div className="flex items-center gap-3 mb-4">
+            <input
+              type="range"
+              min="0.5"
+              max="8"
+              step="0.5"
+              value={plannerHours}
+              onChange={(event) => setPlannerHours(Number(event.target.value))}
+              className="flex-1 accent-red-500"
+            />
+            <span className="font-bold text-gray-800 min-w-[82px] text-right">{formatDuration(plannerHours * 60)}</span>
+          </div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">{t.breakCount}</label>
+          <div className="flex items-center gap-3 mb-4">
+            <input
+              type="range"
+              min="0"
+              max="10"
+              step="1"
+              value={plannerBreakCount}
+              onChange={(event) => setPlannerBreakCount(Math.max(0, Math.min(10, Number(event.target.value))))}
+              className="flex-1 accent-emerald-500"
+            />
+            <input
+              type="number"
+              min="0"
+              max="10"
+              value={plannerBreakCount}
+              onChange={(event) => setPlannerBreakCount(Math.max(0, Math.min(10, Number(event.target.value) || 0)))}
+              className="w-16 px-2 py-1 border border-gray-200 rounded-lg text-center font-bold"
+              aria-label={t.breakCount}
+            />
+          </div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">{t.tasksToComplete}</label>
+          <div className="flex gap-2 mb-3">
+            <input
+              value={plannerNewTask}
+              onChange={(event) => setPlannerNewTask(event.target.value)}
+              onKeyDown={(event) => event.key === 'Enter' && addPlannerTask()}
+              placeholder={t.taskPlaceholder}
+              className="flex-1 px-3 py-2.5 border border-gray-200 rounded-lg text-sm"
+            />
+            <button onClick={addPlannerTask} className="px-4 bg-red-500 text-white rounded-lg">+</button>
+          </div>
+          {plannerTasks.length > 0 && (
+            <div className="space-y-2 mb-4">
+              {plannerTasks.map((task, index) => (
+                <div key={task.id} className="flex items-center gap-3 p-2.5 bg-gray-50 rounded-lg">
+                  <span className="w-6 h-6 rounded-full bg-red-100 text-red-600 flex items-center justify-center text-xs font-bold">{index + 1}</span>
+                  <span className="flex-1 text-sm text-gray-700">{task.text}</span>
+                  <button onClick={() => removePlannerTask(task.id)} className="text-gray-400">×</button>
+                </div>
+              ))}
+            </div>
+          )}
+          {plannedSession?.isActive && (
+            <div className="mb-4 p-3 rounded-lg bg-red-50 text-sm text-red-700">
+              {plannedSession.currentPhase === 'focus' ? t.workingOn : t.breakTime}: {plannedSession.currentPhase === 'focus' ? plannedSession.tasks[plannedSession.currentTaskIndex]?.text : ''}
+            </div>
+          )}
+          {plannedSession && !plannedSession.isActive && (
+            <div className="mb-4 p-4 rounded-lg bg-emerald-50 text-center">
+              <h3 className="font-bold text-emerald-800">{t.sessionComplete}</h3>
+              <button onClick={() => setPlannedSession(null)} className="mt-3 px-4 py-2 bg-emerald-500 text-white rounded-lg">{t.planNewSession}</button>
+            </div>
+          )}
+          <button
+            onClick={startPlannedSession}
+            disabled={plannerTasks.length === 0}
+            className={`w-full py-3 rounded-xl font-semibold text-white ${plannerTasks.length > 0 ? 'bg-red-500' : 'bg-gray-300 cursor-not-allowed'}`}
+          >
+            {plannerTasks.length > 0 ? t.startSession : t.addAtLeastOne}
+          </button>
+        </div>
+      )}
+
       {/* Settings Modal */}
       {showSettings && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl transform animate-in">
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold text-gray-800">⚙️ Settings</h2>
+              <h2 className="text-xl font-bold text-gray-800">⚙️ {t.settings}</h2>
               <button
                 onClick={() => setShowSettings(false)}
                 className="text-gray-400 hover:text-gray-600 transition-colors"
@@ -482,7 +889,7 @@ export default function App() {
             <div className="space-y-5">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Focus Duration (minutes)
+                  {t.focusDuration}
                 </label>
                 <input
                   type="number"
@@ -496,7 +903,7 @@ export default function App() {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Short Break (minutes)
+                  {t.shortBreakDuration}
                 </label>
                 <input
                   type="number"
@@ -510,7 +917,7 @@ export default function App() {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Long Break (minutes)
+                  {t.longBreakDuration}
                 </label>
                 <input
                   type="number"
@@ -524,7 +931,7 @@ export default function App() {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Long Break After (sessions)
+                  {t.longBreakAfter}
                 </label>
                 <input
                   type="number"
@@ -542,13 +949,13 @@ export default function App() {
                 onClick={() => setShowSettings(false)}
                 className="flex-1 py-2.5 border border-gray-200 text-gray-600 rounded-lg font-medium hover:bg-gray-50 transition-all"
               >
-                Cancel
+                {t.cancel}
               </button>
               <button
                 onClick={handleSaveSettings}
                 className="flex-1 py-2.5 bg-gray-800 text-white rounded-lg font-medium hover:bg-gray-700 transition-all"
               >
-                Save
+                {t.save}
               </button>
             </div>
           </div>
@@ -556,9 +963,23 @@ export default function App() {
       )}
 
       {/* Footer */}
-      <div className="mt-8 text-center text-xs text-gray-400">
-        <p>Data saved locally • {new Date().toLocaleDateString()}</p>
-      </div>
+      <footer className="mt-auto pt-8 pb-4 text-center">
+        <a
+          href="https://mohamed-hatem-web.vercel.app"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white border border-gray-200 shadow-sm"
+        >
+          <span className="w-7 h-7 bg-gradient-to-br from-red-500 to-orange-500 rounded-full flex items-center justify-center text-white text-xs font-bold">M</span>
+          <span className="text-left">
+            <span className="block text-xs text-gray-400 leading-none">{t.developedBy}</span>
+            <span className="block text-sm font-semibold text-gray-700">Mohamed Hatem</span>
+          </span>
+        </a>
+        <p className="text-xs text-gray-400 mt-2">
+          {t.dataSaved} • {new Date().toLocaleDateString(language === 'ar' ? 'ar-EG' : 'en-US')}
+        </p>
+      </footer>
     </div>
   );
 }

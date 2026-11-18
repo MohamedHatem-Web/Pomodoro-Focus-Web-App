@@ -1,9 +1,18 @@
 {
   "name": "Pomodoro Focus",
   "short_name": "Pomodoro",
-  "start_url": "/",
+  "start_url": "./",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#ef4444",
-  "icons": []
+  "orientation": "portrait-primary",
+  "description": "A Pomodoro focus timer with tasks, session planning, and productivity tracking.",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
 }

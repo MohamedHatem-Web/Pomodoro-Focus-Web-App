@@ -1,0 +1,18 @@
+{
+  "name": "Focus To Work - Pomodoro Timer",
+  "short_name": "Focus To Work",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ef4444",
+  "orientation": "portrait-primary",
+  "description": "Focus better. Achieve more with a Pomodoro study timer, session planner, task lists, and progress reports.",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

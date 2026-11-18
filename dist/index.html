@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Focus To Work | Pomodoro Study Timer</title>
+    <meta name="application-name" content="Focus To Work" />
+    <meta name="theme-color" content="#ef4444" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta name="description" content="Focus To Work is a free Pomodoro study timer with tasks, session planning, breaks, and progress reports. Focus better and achieve more." />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <link rel="canonical" href="https://focus-to-work.vercel.app/" />
+    <link rel="alternate" hreflang="en" href="https://focus-to-work.vercel.app/" />
+    <link rel="alternate" hreflang="ar" href="https://focus-to-work.vercel.app/" />
+    <link rel="alternate" hreflang="x-default" href="https://focus-to-work.vercel.app/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Focus To Work" />
+    <meta property="og:title" content="Focus To Work | Pomodoro Study Timer" />
+    <meta property="og:description" content="Focus better. Achieve more. Plan study sessions, manage tasks, and track your progress with a free Pomodoro timer." />
+    <meta property="og:url" content="https://focus-to-work.vercel.app/" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:locale:alternate" content="ar_EG" />
+    <meta property="og:image" content="https://focus-to-work.vercel.app/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:alt" content="Focus To Work — Focus better. Achieve more." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Focus To Work | Pomodoro Study Timer" />
+    <meta name="twitter:description" content="Focus better. Achieve more. Plan study sessions, manage tasks, and track your progress with a free Pomodoro timer." />
+    <meta name="twitter:image" content="https://focus-to-work.vercel.app/og-image.png" />
+    <meta name="twitter:image:alt" content="Focus To Work — Focus better. Achieve more." />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Focus To Work",
+        "url": "https://focus-to-work.vercel.app/",
+        "applicationCategory": "ProductivityApplication",
+        "operatingSystem": "Any",
+        "inLanguage": ["en", "ar"],
+        "description": "A free Pomodoro study timer with task lists, session planning, breaks, and productivity reports.",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "featureList": [
+          "Pomodoro focus timer",
+          "Study session planner",
+          "Task tracking",
+          "Weekly and monthly progress reports",
+          "Offline support"
+        ]
+      }
+    </script>
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Focus To Work" />
+    <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+    <link rel="apple-touch-icon" href="./icon.svg" />
+    <style>
+      /* 内联样式确保主题色立即生效，避免闪烁 */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+      }
+      html.light,
+      html.light body {
+        background-color: #ffffff !important;
+        color: #000000;
+      }
+      html.dark,
+      html.dark body {
+        background-color: #1a1a1a !important;
+        color: #ffffff;
+      }
+    </style>
+    <script>
+      // 在 React 加载前立即设置主题，避免闪烁
+      (function () {
+        const isInIframe = window.self !== window.top;
+
+        function applyThemeToDOM(theme) {
+          document.documentElement.classList.remove("light", "dark");
+          document.documentElement.classList.add(theme);
+          document.documentElement.setAttribute("data-theme", theme);
+        }
+
+        const savedTheme = localStorage.getItem("pomodoro_theme");
+        if (savedTheme === "light" || savedTheme === "dark") {
+          applyThemeToDOM(savedTheme);
+        } else if (isInIframe) {
+          // 监听父窗口主动推送的主题消息
+          window.addEventListener("message", function (event) {
+            if (event.data && typeof event.data.theme === "string") {
+              const theme = event.data.theme;
+              if (theme === "light" || theme === "dark") {
+                applyThemeToDOM(theme);
+              }
+            }
+          });
+        } else {
+          applyThemeToDOM(window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        }
+      })();
+    </script>
+      <script>
+      (function () {
+        if (window.self === window.top) return;
+        var reported = {};
+        window.addEventListener("error", function (event) {
+          // 资源加载失败的 error 事件没有 message，此处仅上报 JS 运行时错误
+          if (!event || !event.message) return;
+          var key =
+            event.message + "|" + (event.filename || "") + "|" + (event.lineno || 0);
+          if (reported[key]) return; // 相同错误只上报一次，避免渲染循环刷屏
+          reported[key] = true;
+          try {
+            window.parent.postMessage(
+              {
+                type: "sandbox-runtime-error",
+                payload: {
+                  message: String(event.message).slice(0, 500),
+                  filename: event.filename || "",
+                  lineno: event.lineno || 0,
+                  colno: event.colno || 0,
+                  stack:
+                    event.error && event.error.stack
+                      ? String(event.error.stack).slice(0, 2000)
+                      : ""
+                }
+              },
+              "*"
+            );
+          } catch (e) {
+            /* 上报失败不影响页面运行 */
+          }
+        });
+      })();
+    </script>
+    <script type="module" crossorigin src="./assets/index-Eb4XE9Sh.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-ClL1-rBY.css">
+  </head>
+  <body>
+    <noscript>
+      <main>
+        <h1>Focus To Work — Free Pomodoro Study Timer</h1>
+        <p>Focus better. Achieve more. Plan study sessions, manage tasks, take breaks, and track your progress with Focus To Work.</p>
+      </main>
+    </noscript>
+    <div id="root"></div>
+  </body>
+</html>

@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Bell, BookOpen, Clock3, MapPin, MoonStar, Volume2 } from 'lucide-react';
+import { Bell, BookOpen, Clock3, MoonStar, Volume2 } from 'lucide-react';
 import { translations, type Language } from './i18n';
 import {
   loadPrayerLocationIndex,
   type PrayerLocationIndex,
-  type PrayerPlaceOption,
   type PrayerRegionOption,
 } from './prayer-location-data';
 import type { PrayerMonthSchedule } from './prayer-times';
@@ -36,8 +35,6 @@ const prayerMethods: { id: number; translationKey: 'prayerMethodEgypt' | 'prayer
   { id: 1, translationKey: 'prayerMethodKarachi' },
 ];
 
-const MAX_CITY_RESULTS = 200;
-const MAX_CITY_OPTIONS = 12;
 type GetStatesOfCountry = typeof import('localized-countries-states').getStatesOfCountry;
 
 function normalizeSubdivisionName(name: string): string {
@@ -117,25 +114,17 @@ export default function SpiritualSettingsPanel({
   const [locationIndexError, setLocationIndexError] = useState(false);
   const [regionLocalizationError, setRegionLocalizationError] = useState(false);
   const [getStatesOfCountry, setGetStatesOfCountry] = useState<GetStatesOfCountry | null>(null);
-  const [citySearch, setCitySearch] = useState('');
-  const [isCityListOpen, setIsCityListOpen] = useState(false);
-  const [activeCityIndex, setActiveCityIndex] = useState(-1);
   const countriesList = useMemo(() => {
     const names = new Intl.DisplayNames([language], { type: 'region' });
-    const availableCodes = new Set(locationIndex?.places.map((place) => place.countryCode) ?? []);
+    const availableCodes = new Set(locationIndex?.regions.map((region) => region.countryCode) ?? []);
     return [...availableCodes]
       .map((code) => ({ code, name: names.of(code) || code }))
       .sort((left, right) => left.name.localeCompare(right.name, language));
   }, [language, locationIndex]);
   const availableRegions = useMemo(() => {
     if (!locationIndex || !preferences.prayerCountryCode) return [];
-    const availableRegionCodes = new Set(
-      locationIndex.places
-        .filter((place) => place.countryCode === preferences.prayerCountryCode)
-        .map((place) => place.regionCode),
-    );
     return locationIndex.regions
-      .filter((region) => region.countryCode === preferences.prayerCountryCode && availableRegionCodes.has(region.code));
+      .filter((region) => region.countryCode === preferences.prayerCountryCode);
   }, [locationIndex, preferences.prayerCountryCode]);
   const localizedRegionNames = useMemo(
     () => localizedSubdivisionNames(availableRegions, language, getStatesOfCountry),
@@ -150,22 +139,6 @@ export default function SpiritualSettingsPanel({
     [availableRegions, language, localizedRegionNames],
   );
   const hasRegionOptions = regionsForCountry.length > 0;
-  const placesForSelection = useMemo(() => {
-    if (!locationIndex || !preferences.prayerCountryCode) return [];
-    return locationIndex.places
-      .filter((place) =>
-        place.countryCode === preferences.prayerCountryCode &&
-        (!hasRegionOptions || place.regionCode === preferences.prayerRegionCode),
-      )
-      .sort((left, right) => left.name.localeCompare(right.name, language));
-  }, [hasRegionOptions, locationIndex, preferences.prayerCountryCode, preferences.prayerRegionCode]);
-  const isCitySearchRequired = placesForSelection.length > MAX_CITY_RESULTS;
-  const matchingCities = useMemo(() => {
-    const query = citySearch.trim().toLocaleLowerCase(language);
-    if (query.length < 2) return isCitySearchRequired ? [] : placesForSelection;
-    return placesForSelection.filter((place) => place.name.toLocaleLowerCase(language).includes(query));
-  }, [citySearch, isCitySearchRequired, language, placesForSelection]);
-  const cityOptions = matchingCities.slice(0, MAX_CITY_OPTIONS);
   const update = (patch: Partial<SpiritualPreferences>) => onChange({ ...preferences, ...patch });
   const toggleKind = (kind: ReminderKind) => {
     const reminderKinds = preferences.reminderKinds.includes(kind)
@@ -186,23 +159,9 @@ export default function SpiritualSettingsPanel({
   const selectedCountry = countriesList.find((country) => country.code === preferences.prayerCountryCode);
   const countryName = selectedCountry?.name || '';
   const selectedRegion = regionsForCountry.find((region) => region.code === preferences.prayerRegionCode);
-  const selectedPlace = locationIndex?.places.find((place) =>
-    place.id === preferences.prayerPlaceId &&
-    place.countryCode === preferences.prayerCountryCode &&
-    (!hasRegionOptions || place.regionCode === preferences.prayerRegionCode),
-  );
   const hasUntranslatedRegions = language === 'ar' && getStatesOfCountry !== null &&
     regionsForCountry.some((region) => region.code !== '00' && !localizedRegionNames.has(region.code));
   const prayerMode = preferences.prayerMode;
-  const citySearchMessage = isCitySearchRequired && citySearch.trim().length < 2
-    ? t.prayerCitySearchHint
-    : matchingCities.length > MAX_CITY_OPTIONS
-      ? t.prayerCitySearchMore
-      : matchingCities.length === 0 && citySearch.trim().length >= 2
-        ? t.prayerNoCitiesFound
-        : !preferences.prayerPlaceId && cityOptions.length > 0
-          ? t.prayerCitySelectHint
-          : '';
 
   useEffect(() => {
     let active = true;
@@ -218,6 +177,27 @@ export default function SpiritualSettingsPanel({
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!selectedRegion) return;
+    const alreadyUsesRegionLocation = preferences.prayerLocationVersion === 2 &&
+      preferences.prayerPlaceId === selectedRegion.id &&
+      preferences.prayerCity === selectedRegion.name &&
+      preferences.prayerLatitude === selectedRegion.latitude &&
+      preferences.prayerLongitude === selectedRegion.longitude &&
+      preferences.prayerTimezone === selectedRegion.timezone;
+    if (alreadyUsesRegionLocation) return;
+
+    onChange({
+      ...preferences,
+      prayerPlaceId: selectedRegion.id,
+      prayerCity: selectedRegion.name,
+      prayerLatitude: selectedRegion.latitude,
+      prayerLongitude: selectedRegion.longitude,
+      prayerTimezone: selectedRegion.timezone,
+      prayerLocationVersion: 2,
+    });
+  }, [onChange, preferences, selectedRegion]);
 
   useEffect(() => {
     if (language === 'en' || getStatesOfCountry) return;
@@ -237,29 +217,6 @@ export default function SpiritualSettingsPanel({
       active = false;
     };
   }, [getStatesOfCountry, language]);
-
-  const selectPlace = (place: PrayerPlaceOption | undefined) => {
-    setCitySearch(place?.name ?? '');
-    setIsCityListOpen(false);
-    setActiveCityIndex(-1);
-    if (!place) {
-      update({
-        prayerPlaceId: null,
-        prayerCity: '',
-        prayerLatitude: null,
-        prayerLongitude: null,
-        prayerTimezone: '',
-      });
-      return;
-    }
-    update({
-      prayerPlaceId: place.id,
-      prayerCity: place.name,
-      prayerLatitude: place.latitude,
-      prayerLongitude: place.longitude,
-      prayerTimezone: place.timezone,
-    });
-  };
 
   return (
     <section className="spiritual-settings-panel" aria-labelledby="spiritual-settings-title">
@@ -408,7 +365,7 @@ export default function SpiritualSettingsPanel({
         <p className="settings-helper">{t.prayerLocationHint}</p>
         <p className="settings-helper" role="status" aria-live="polite">
           {locationIndex
-            ? t.prayerLocationCount.replace('{count}', locationIndex.places.length.toLocaleString(language))
+            ? t.prayerLocationCount.replace('{count}', locationIndex.regions.length.toLocaleString(language))
             : locationIndexError
               ? t.prayerLocationDataError
               : t.prayerLocationDataLoading}
@@ -432,9 +389,6 @@ export default function SpiritualSettingsPanel({
               const defaultMethod = countryCode === 'EG'
                 ? 5
                 : countryCode === 'US' || countryCode === 'CA' ? 2 : preferences.prayerMethod;
-              setCitySearch('');
-              setIsCityListOpen(false);
-              setActiveCityIndex(-1);
               update({
                 prayerCountryCode: countryCode,
                 prayerRegionCode: '',
@@ -444,6 +398,7 @@ export default function SpiritualSettingsPanel({
                 prayerLatitude: null,
                 prayerLongitude: null,
                 prayerTimezone: '',
+                prayerLocationVersion: 2,
                 prayerMethod: defaultMethod,
               });
             }}
@@ -461,17 +416,15 @@ export default function SpiritualSettingsPanel({
               value={preferences.prayerRegionCode}
               onChange={(event) => {
                 const region = regionsForCountry.find((item) => item.code === event.target.value);
-                setCitySearch('');
-                setIsCityListOpen(false);
-                setActiveCityIndex(-1);
                 update({
                   prayerRegionCode: region?.code ?? '',
                   prayerRegionName: region?.name ?? '',
-                  prayerPlaceId: null,
-                  prayerCity: '',
-                  prayerLatitude: null,
-                  prayerLongitude: null,
-                  prayerTimezone: '',
+                  prayerPlaceId: region?.id ?? null,
+                  prayerCity: region?.name ?? '',
+                  prayerLatitude: region?.latitude ?? null,
+                  prayerLongitude: region?.longitude ?? null,
+                  prayerTimezone: region?.timezone ?? '',
+                  prayerLocationVersion: 2,
                 });
               }}
             >
@@ -484,87 +437,6 @@ export default function SpiritualSettingsPanel({
               })}
             </select>
           </label>
-        )}
-        {preferences.prayerCountryCode && (
-          <>
-            <label className="settings-field settings-city-field">
-              <span>{t.prayerCity}</span>
-              <div className="settings-city-combobox">
-                <div className="settings-input-with-icon">
-                  <MapPin size={16} aria-hidden="true" />
-                  <input
-                    type="search"
-                    role="combobox"
-                    aria-autocomplete="list"
-                    aria-expanded={isCityListOpen && cityOptions.length > 0}
-                    aria-controls="prayer-city-options"
-                    aria-activedescendant={
-                      isCityListOpen && activeCityIndex >= 0
-                        ? `prayer-city-option-${cityOptions[activeCityIndex]?.id}`
-                        : undefined
-                    }
-                    maxLength={100}
-                    value={citySearch}
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      setCitySearch(value);
-                      setIsCityListOpen(true);
-                      setActiveCityIndex(-1);
-                      if (selectedPlace && value !== selectedPlace.name) {
-                        update({
-                          prayerPlaceId: null,
-                          prayerCity: '',
-                          prayerLatitude: null,
-                          prayerLongitude: null,
-                          prayerTimezone: '',
-                        });
-                      }
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'ArrowDown' && cityOptions.length > 0) {
-                        event.preventDefault();
-                        setIsCityListOpen(true);
-                        setActiveCityIndex((index) => (index + 1) % cityOptions.length);
-                      } else if (event.key === 'ArrowUp' && cityOptions.length > 0) {
-                        event.preventDefault();
-                        setIsCityListOpen(true);
-                        setActiveCityIndex((index) => index <= 0 ? cityOptions.length - 1 : index - 1);
-                      } else if (event.key === 'Enter' && isCityListOpen && cityOptions.length > 0) {
-                        event.preventDefault();
-                        selectPlace(cityOptions[activeCityIndex >= 0 ? activeCityIndex : 0]);
-                      } else if (event.key === 'Escape') {
-                        setIsCityListOpen(false);
-                        setActiveCityIndex(-1);
-                      }
-                    }}
-                    onFocus={() => setIsCityListOpen(true)}
-                    onBlur={() => setIsCityListOpen(false)}
-                    placeholder={t.prayerCitySearchPlaceholder}
-                    disabled={!locationIndex || (hasRegionOptions && !preferences.prayerRegionCode)}
-                  />
-                </div>
-                {isCityListOpen && cityOptions.length > 0 && (
-                  <div id="prayer-city-options" className="settings-city-options" role="listbox" aria-label={t.prayerCity}>
-                    {cityOptions.map((place, index) => (
-                      <button
-                        key={place.id}
-                        id={`prayer-city-option-${place.id}`}
-                        type="button"
-                        role="option"
-                        aria-selected={preferences.prayerPlaceId === place.id}
-                        className={`settings-city-option ${activeCityIndex === index ? 'is-active' : ''}`}
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => selectPlace(place)}
-                      >
-                        {place.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </label>
-            <p className="settings-helper" role="status" aria-live="polite">{citySearchMessage}</p>
-          </>
         )}
         <label className="settings-field">
           <span>{t.prayerMethod}</span>
@@ -587,7 +459,7 @@ export default function SpiritualSettingsPanel({
           type="button"
           className="settings-load-prayer-times"
           onClick={onLoadPrayerTimes}
-          disabled={prayerLoadState === 'loading' || !preferences.prayerPlaceId || !selectedPlace}
+          disabled={prayerLoadState === 'loading' || !preferences.prayerPlaceId || !selectedRegion}
         >
           <BookOpen size={16} aria-hidden="true" />
           {prayerLoadState === 'loading' ? t.prayerTimesLoading : t.prayerLoadTimes}
@@ -604,7 +476,7 @@ export default function SpiritualSettingsPanel({
         {scheduleIsCurrent && (
           <p className="settings-schedule-meta">
             {countryName}{selectedRegion ? ` · ${localizedRegionNames.get(selectedRegion.code) || selectedRegion.name}` : ''}
-            {preferences.prayerCity ? ` · ${preferences.prayerCity}` : ''} · {schedule?.timezone}
+          {' · '}{schedule?.timezone}
           </p>
         )}
       </fieldset>

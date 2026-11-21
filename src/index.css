@@ -3737,60 +3737,6 @@ button:active {
   opacity: 0.55;
 }
 
-.settings-input-with-icon {
-  position: relative;
-}
-
-.settings-input-with-icon svg {
-  position: absolute;
-  top: 50%;
-  inset-inline-start: 0.7rem;
-  color: #78877e;
-  transform: translateY(-50%);
-}
-
-.settings-input-with-icon input {
-  padding-inline-start: 2.2rem;
-}
-
-.settings-city-combobox {
-  min-width: 0;
-}
-
-.settings-city-options {
-  display: grid;
-  max-height: 14rem;
-  margin-top: 0.4rem;
-  overflow: auto;
-  border: 1px solid var(--focus-ui-border);
-  border-radius: 0.75rem;
-  background: var(--focus-ui-surface);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.1);
-}
-
-.settings-city-option {
-  min-height: 2.5rem;
-  padding: 0.55rem 0.75rem;
-  border: 0;
-  color: var(--focus-ui-text);
-  background: transparent;
-  font: inherit;
-  font-size: 0.84rem;
-  text-align: start;
-  cursor: pointer;
-}
-
-.settings-city-option + .settings-city-option {
-  border-top: 1px solid var(--focus-ui-border);
-}
-
-.settings-city-option:hover,
-.settings-city-option.is-active,
-.settings-city-option[aria-selected="true"] {
-  color: var(--focus-ui-accent);
-  background: var(--focus-ui-accent-soft);
-}
-
 .settings-choice-group {
   margin-top: 0.75rem;
 }

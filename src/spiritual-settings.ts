@@ -21,6 +21,7 @@ export interface SpiritualPreferences {
   prayerLatitude: number | null;
   prayerLongitude: number | null;
   prayerTimezone: string;
+  prayerLocationVersion?: 2;
   prayerMethod: number;
   prayerIqamaEnabled: boolean;
   prayerSpeech?: boolean;
@@ -106,6 +107,7 @@ export function loadSpiritualPreferences(): SpiritualPreferences {
       prayerLatitude: hasPrayerPlace ? Number(saved.prayerLatitude) : null,
       prayerLongitude: hasPrayerPlace ? Number(saved.prayerLongitude) : null,
       prayerTimezone: hasPrayerPlace ? saved.prayerTimezone as string : '',
+      prayerLocationVersion: saved.prayerLocationVersion === 2 ? 2 : undefined,
       prayerMethod: typeof saved.prayerMethod === 'number' && prayerMethods.includes(saved.prayerMethod)
         ? saved.prayerMethod
         : defaults.prayerMethod,
@@ -144,6 +146,7 @@ export function isSpiritualPreferences(value: unknown): value is SpiritualPrefer
     (value.prayerLongitude === undefined || value.prayerLongitude === null ||
       (typeof value.prayerLongitude === 'number' && value.prayerLongitude >= -180 && value.prayerLongitude <= 180)) &&
     (value.prayerTimezone === undefined || typeof value.prayerTimezone === 'string') &&
+    (value.prayerLocationVersion === undefined || value.prayerLocationVersion === 2) &&
     typeof value.prayerMethod === 'number' &&
     prayerMethods.includes(value.prayerMethod) &&
     (value.prayerIqamaEnabled === undefined || typeof value.prayerIqamaEnabled === 'boolean') &&

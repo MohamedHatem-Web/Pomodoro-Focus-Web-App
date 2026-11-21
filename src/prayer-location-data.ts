@@ -2,13 +2,7 @@ export interface PrayerRegionOption {
   countryCode: string;
   code: string;
   name: string;
-}
-
-export interface PrayerPlaceOption {
   id: number;
-  countryCode: string;
-  regionCode: string;
-  name: string;
   latitude: number;
   longitude: number;
   timezone: string;
@@ -16,33 +10,22 @@ export interface PrayerPlaceOption {
 
 export interface PrayerLocationIndex {
   regions: PrayerRegionOption[];
-  places: PrayerPlaceOption[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isRegionRow(value: unknown): value is [string, string, string] {
+function isRegionRow(value: unknown): value is [string, string, string, number, number, number, string] {
   return Array.isArray(value) &&
-    value.length === 3 &&
+    value.length === 7 &&
     typeof value[0] === 'string' &&
     /^[A-Z]{2}$/.test(value[0]) &&
     typeof value[1] === 'string' &&
     typeof value[2] === 'string' &&
-    value[2].trim().length > 0;
-}
-
-function isPlaceRow(value: unknown): value is [number, string, string, string, number, number, string] {
-  return Array.isArray(value) &&
-    value.length === 7 &&
-    Number.isSafeInteger(value[0]) &&
-    value[0] > 0 &&
-    typeof value[1] === 'string' &&
-    /^[A-Z]{2}$/.test(value[1]) &&
-    typeof value[2] === 'string' &&
-    typeof value[3] === 'string' &&
-    value[3].trim().length > 0 &&
+    value[2].trim().length > 0 &&
+    Number.isSafeInteger(value[3]) &&
+    value[3] > 0 &&
     typeof value[4] === 'number' &&
     value[4] >= -90 &&
     value[4] <= 90 &&
@@ -56,43 +39,34 @@ function isPlaceRow(value: unknown): value is [number, string, string, string, n
 function parseLocationIndex(value: unknown): PrayerLocationIndex {
   if (
     !isRecord(value) ||
-    value.format !== 'geonames-location-index' ||
+    value.format !== 'geonames-region-index' ||
     value.version !== 1 ||
     value.license !== 'CC BY 4.0' ||
     !Array.isArray(value.regions) ||
-    !Array.isArray(value.places) ||
     value.regions.length === 0 ||
-    value.places.length === 0
+    !value.regions.every(isRegionRow)
   ) {
-    throw new Error('The offline prayer location list has an unsupported format.');
+    throw new Error('The offline prayer region list has an unsupported or invalid format.');
   }
 
-  if (!value.regions.every(isRegionRow) || !value.places.every(isPlaceRow)) {
-    throw new Error('The offline prayer location list contains invalid entries.');
-  }
-
-  const validTimezones = new Set<string>();
-  for (const [, , , , , , timezone] of value.places) {
-    if (validTimezones.has(timezone)) continue;
+  const keys = new Set<string>();
+  const ids = new Set<number>();
+  const regions = value.regions.map(([countryCode, code, name, id, latitude, longitude, timezone]) => {
+    const key = `${countryCode}:${code}`;
+    if (keys.has(key) || ids.has(id)) {
+      throw new Error(`The offline prayer region list contains a duplicate region or location ID: ${key}.`);
+    }
+    keys.add(key);
+    ids.add(id);
     try {
       new Intl.DateTimeFormat('en', { timeZone: timezone });
-      validTimezones.add(timezone);
     } catch {
-      throw new Error(`The offline prayer location list contains an invalid time zone: ${timezone}.`);
+      throw new Error(`The offline prayer region list contains an invalid time zone: ${timezone}.`);
     }
-  }
-
-  const placeIds = new Set<number>();
-  const places = value.places.map(([id, countryCode, regionCode, name, latitude, longitude, timezone]) => {
-    if (placeIds.has(id)) {
-      throw new Error(`The offline prayer location list contains a duplicate place ID: ${id}.`);
-    }
-    placeIds.add(id);
-    return { id, countryCode, regionCode, name, latitude, longitude, timezone };
+    return { countryCode, code, name, id, latitude, longitude, timezone };
   });
 
-  const regions = value.regions.map(([countryCode, code, name]) => ({ countryCode, code, name }));
-  return { regions, places };
+  return { regions };
 }
 
 let locationIndexPromise: Promise<PrayerLocationIndex> | null = null;
@@ -104,7 +78,7 @@ export function loadPrayerLocationIndex(): Promise<PrayerLocationIndex> {
     })
       .then(async (response) => {
         if (!response.ok) {
-          throw new Error(`The offline prayer location list returned ${response.status}.`);
+          throw new Error(`The offline prayer region list returned ${response.status}.`);
         }
         return parseLocationIndex(await response.json());
       })

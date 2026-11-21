@@ -1,14 +1,17 @@
-import { readFileSync } from "node:fs";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { VitePWA } from "vite-plugin-pwa";
 
 const appVersion = JSON.parse(
-  readFileSync(new URL("./src-tauri/tauri.conf.json", import.meta.url), "utf8"),
+  readFileSync(new URL("./package.json", import.meta.url), "utf8"),
 ).version;
+if (typeof appVersion !== "string" || appVersion.trim().length === 0) {
+  throw new Error("A valid app version is required in package.json.");
+}
 
+mkdirSync(new URL("./public/", import.meta.url), { recursive: true });
 writeFileSync(
   new URL("./public/app-update.json", import.meta.url),
   `${JSON.stringify({ version: appVersion, url: "https://focus-to-work.vercel.app/" }, null, 2)}\n`,

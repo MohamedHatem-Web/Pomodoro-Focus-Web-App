@@ -1,14 +1,29 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { registerSW } from "virtual:pwa-register";
 import "./index.css";
 import App from "./App.tsx";
+import { applyNativeRemoteUpdate } from "./native-update";
 
-ReactDOM.createRoot(document.getElementById("root")!).render(<App />);
+declare const __APP_VERSION__: string;
 
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./sw.js").catch(() => {
-      // The app remains fully usable without service-worker support.
-    });
-  });
-}
+void applyNativeRemoteUpdate(__APP_VERSION__).finally(() => {
+  ReactDOM.createRoot(document.getElementById("root")!).render(<App />);
+});
+
+const updateServiceWorker = registerSW({
+  immediate: true,
+  onOfflineReady() {
+    window.dispatchEvent(new CustomEvent("focus-to-work:offline-ready"));
+  },
+  onNeedRefresh() {
+    window.dispatchEvent(new CustomEvent("focus-to-work:update-ready"));
+  },
+  onRegisterError(error) {
+    console.error("Unable to register the application update service worker.", error);
+  },
+});
+
+window.addEventListener("focus-to-work:apply-update", () => {
+  void updateServiceWorker(true);
+});

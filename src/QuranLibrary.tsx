@@ -212,6 +212,8 @@ interface QuranLibraryProps {
   language: Language;
   isActive: boolean;
   onOpenLibrary: () => void;
+  onPlaybackChange?: (isPlaying: boolean) => void;
+  onMiniPlayerVisibilityChange?: (isVisible: boolean) => void;
 }
 
 interface MiniPlayerDrag {
@@ -226,7 +228,13 @@ interface DocumentPictureInPictureApi {
   requestWindow: (options: { width: number; height: number }) => Promise<Window>;
 }
 
-export default function QuranLibrary({ language, isActive, onOpenLibrary }: QuranLibraryProps) {
+export default function QuranLibrary({
+  language,
+  isActive,
+  onOpenLibrary,
+  onPlaybackChange,
+  onMiniPlayerVisibilityChange,
+}: QuranLibraryProps) {
   const t = translations[language];
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [savedPreferences] = useState(loadQuranPreferences);
@@ -265,6 +273,11 @@ export default function QuranLibrary({ language, isActive, onOpenLibrary }: Qura
   const favoritesPanelRef = useRef<HTMLElement | null>(null);
   const favoritesTriggerRef = useRef<HTMLButtonElement | null>(null);
   const wasFavoritesOpenRef = useRef(false);
+
+  useEffect(() => {
+    onPlaybackChange?.(isPlaying);
+    return () => onPlaybackChange?.(false);
+  }, [isPlaying, onPlaybackChange]);
 
   useEffect(() => {
     const cachedCatalog = catalogCache.get(language);
@@ -335,6 +348,8 @@ export default function QuranLibrary({ language, isActive, onOpenLibrary }: Qura
     reciter.name.toLocaleLowerCase().includes(reciterSearch.trim().toLocaleLowerCase()));
   const currentSurahIndex = availableSurahs.findIndex((surah) => surah.id === selectedSurah?.id);
   const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+  const progressDirection = language === 'ar' ? 'rtl' : 'ltr';
+  const progressGradientDirection = language === 'ar' ? 'to left' : 'to right';
 
   preferencesRef.current = {
     ...preferencesRef.current,
@@ -714,6 +729,11 @@ export default function QuranLibrary({ language, isActive, onOpenLibrary }: Qura
   const favoriteReciters = reciters.filter((reciter) => favoriteReciterIds.includes(reciter.id));
   const favoriteSurahs = (visibleCatalog?.surahs || []).filter((surah) => favoriteSurahIds.includes(surah.id));
   const showMiniPlayer = !isActive && hasPlayed && !isMiniPlayerHidden;
+  const showInlineMiniPlayer = showMiniPlayer && !floatingPlayer;
+  useEffect(() => {
+    onMiniPlayerVisibilityChange?.(showInlineMiniPlayer);
+    return () => onMiniPlayerVisibilityChange?.(false);
+  }, [onMiniPlayerVisibilityChange, showInlineMiniPlayer]);
   const miniPlayerContent = (
     <aside
       ref={miniPlayerRef}
@@ -797,12 +817,13 @@ export default function QuranLibrary({ language, isActive, onOpenLibrary }: Qura
       <input
         className="quran-mini-progress"
         type="range"
+        dir={progressDirection}
         min="0"
         max={duration || 1}
         step="1"
         value={Math.min(currentTime, duration || 1)}
         aria-label={t.quranPlaybackProgress}
-        style={{ background: `linear-gradient(to right, #d6bd78 ${progress}%, rgba(255,255,255,.16) ${progress}%)` }}
+        style={{ background: `linear-gradient(${progressGradientDirection}, #d6bd78 ${progress}%, rgba(255,255,255,.16) ${progress}%)` }}
         onChange={(event) => {
           const nextTime = Number(event.target.value);
           if (audioRef.current) audioRef.current.currentTime = nextTime;
@@ -1125,12 +1146,13 @@ export default function QuranLibrary({ language, isActive, onOpenLibrary }: Qura
                 id="quran-progress"
                 className="quran-progress"
                 type="range"
+                dir={progressDirection}
                 min="0"
                 max={duration || 1}
                 step="1"
                 value={Math.min(currentTime, duration || 1)}
                 style={{
-                  background: `linear-gradient(to right, #d6bd78 ${progress}%, rgba(255, 255, 255, 0.19) ${progress}%)`,
+                  background: `linear-gradient(${progressGradientDirection}, #d6bd78 ${progress}%, rgba(255, 255, 255, 0.19) ${progress}%)`,
                 }}
                 onChange={(event) => {
                   const nextTime = Number(event.target.value);
@@ -1300,7 +1322,7 @@ export default function QuranLibrary({ language, isActive, onOpenLibrary }: Qura
       <div className="quran-pip-root">{miniPlayerContent}</div>,
       floatingPlayer.container,
     )}
-    {showMiniPlayer && !floatingPlayer && miniPlayerContent}
+    {showInlineMiniPlayer && miniPlayerContent}
     </>
   );
 }

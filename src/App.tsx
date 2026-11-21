@@ -1,11 +1,60 @@
 import { useState, useEffect, useCallback, useRef, type ChangeEvent } from 'react';
+import {
+  Apple,
+  BookOpen,
+  BarChart3,
+  Bell,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Download,
+  Github,
+  HeartHandshake,
+  Info,
+  Laptop,
+  ListTodo,
+  Linkedin,
+  Mail,
+  Menu,
+  MonitorDown,
+  Moon,
+  Package,
+  Pencil,
+  Plus,
+  Smartphone,
+  Sun,
+  Settings as SettingsIcon,
+  Timer,
+  Trash2,
+  X,
+} from 'lucide-react';
+import { Capacitor } from '@capacitor/core';
+import prayerCueUrl from './assets/prayer-cue.mp3';
 import { translations, Language } from './i18n';
 import QuranLibrary from './QuranLibrary';
+import FirstRunExperience from './FirstRunExperience';
+import SpiritualSettingsPanel from './SpiritualSettingsPanel';
+import {
+  fetchPrayerMonth,
+  getPrayerDateTime,
+  isPrayerMonthSchedule,
+  prayerNames,
+  type PrayerMonthSchedule,
+  type PrayerName,
+} from './prayer-times';
+import {
+  DEFAULT_SPIRITUAL_PREFERENCES,
+  isSpiritualPreferences,
+  loadSpiritualPreferences,
+  SPIRITUAL_SETTINGS_KEY,
+  type ReminderKind,
+  type SpiritualPreferences,
+} from './spiritual-settings';
 
 // Types
 type TimerMode = 'focus' | 'shortBreak' | 'longBreak';
 type Theme = 'light' | 'dark';
-type View = 'timer' | 'planner' | 'reports' | 'prayers' | 'quran';
+type View = 'timer' | 'planner' | 'reports' | 'prayers' | 'quran' | 'about' | 'downloads';
 type ReportPeriod = 'week' | 'month';
 type PrayerCategoryId = 'study' | 'exam' | 'ease' | 'forgiveness' | 'after';
 type PlannerDurationMode = 'focus-only' | 'elapsed-total';
@@ -129,7 +178,7 @@ interface DailyStats {
 
 interface ActivityEvent {
   id: string;
-  type: 'focus_completed' | 'task_added' | 'task_completed' | 'task_uncompleted';
+  type: 'focus_completed' | 'task_added' | 'task_completed' | 'task_uncompleted' | 'task_removed';
   timestamp: number;
   taskId?: string;
   minutes?: number;
@@ -170,6 +219,14 @@ interface PlannedSession {
   pendingTaskIndex: number;
 }
 
+interface CompletionSummary {
+  kind: 'focus' | 'break' | 'session';
+  focusMinutes: number;
+  elapsedMinutes: number;
+  completedTasks: number;
+  totalTasks: number;
+}
+
 const MINIMUM_PLANNER_FOCUS_BLOCK_MINUTES = 25;
 
 function getCompletedFocusBlocks(session: PlannedSession): number {
@@ -188,6 +245,14 @@ function getCompletedBreaks(session: PlannedSession): number {
 
 function getFocusBlockMinutes(session: PlannedSession, blockIndex = getCompletedFocusBlocks(session)): number {
   return session.focusBlockMinutes?.[blockIndex] ?? session.timePerTask;
+}
+
+function getCompletedFocusMinutes(session: PlannedSession, completedBlocks = getCompletedFocusBlocks(session)): number {
+  let minutes = 0;
+  for (let index = 0; index < completedBlocks; index += 1) {
+    minutes += getFocusBlockMinutes(session, index);
+  }
+  return minutes;
 }
 
 function getMaximumPlannerBreaks(
@@ -228,6 +293,63 @@ interface SavedTimerState {
   deadline: number | null;
   view: View;
   plannedSession: PlannedSession | null;
+  reminderNextAt?: number | null;
+  reminderTimeLeftMs?: number | null;
+  prayerPausePending?: boolean;
+  pendingPrayerName?: PrayerName | null;
+}
+
+interface MindfulReminder {
+  kind: ReminderKind;
+  arabic: string;
+  english: string;
+  source: { en: string; ar: string };
+}
+
+const mindfulReminderContent: Record<ReminderKind, MindfulReminder[]> = {
+  quran: [
+    { kind: 'quran', arabic: 'رَبِّ زِدْنِي عِلْمًا', english: 'My Lord, increase me in knowledge.', source: { en: 'Quran · Ta-Ha 20:114', ar: 'القرآن الكريم · طه: ١١٤' } },
+    { kind: 'quran', arabic: 'رَبِّ اشْرَحْ لِي صَدْرِي وَيَسِّرْ لِي أَمْرِي', english: 'My Lord, expand for me my chest and ease for me my task.', source: { en: 'Quran · Ta-Ha 20:25–26', ar: 'القرآن الكريم · طه: ٢٥–٢٦' } },
+    { kind: 'quran', arabic: 'لَا إِلَهَ إِلَّا أَنْتَ سُبْحَانَكَ إِنِّي كُنْتُ مِنَ الظَّالِمِينَ', english: 'There is no deity except You; exalted are You. Indeed, I have been of the wrongdoers.', source: { en: 'Quran · Al-Anbiya 21:87', ar: 'القرآن الكريم · الأنبياء: ٨٧' } },
+    { kind: 'quran', arabic: 'حَسْبُنَا اللَّهُ وَنِعْمَ الْوَكِيلُ', english: 'Allah is sufficient for us, and He is the best Disposer of affairs.', source: { en: 'Quran · Aal-E-Imran 3:173', ar: 'القرآن الكريم · آل عمران: ١٧٣' } },
+  ],
+  dua: [
+    { kind: 'dua', arabic: 'اللهم افتح عليّ أبواب الفهم، وارزقني علمًا نافعًا، وبارك لي في وقتي.', english: 'O Allah, open the doors of understanding for me, grant me beneficial knowledge, and bless my time.', source: { en: 'A personal supplication', ar: 'دعاء عام' } },
+    { kind: 'dua', arabic: 'اللهم ذكّرني ما نسيت، واهدني للصواب، ويسّر لي الإجابة.', english: 'O Allah, remind me of what I have forgotten, guide me to what is correct, and make my answers easy.', source: { en: 'A personal supplication', ar: 'دعاء عام' } },
+    { kind: 'dua', arabic: 'اللهم لا سهل إلا ما جعلته سهلًا، وأنت تجعل الصعب إذا شئت سهلًا.', english: 'O Allah, nothing is easy except what You make easy, and You can make what is difficult easy if You will.', source: { en: 'Supplication for ease', ar: 'دعاء للتيسير' } },
+  ],
+  istighfar: [
+    { kind: 'istighfar', arabic: 'أَسْتَغْفِرُ اللَّهَ وَأَتُوبُ إِلَيْهِ', english: 'I seek Allah’s forgiveness and repent to Him.', source: { en: 'Istighfar', ar: 'استغفار' } },
+  ],
+  salawat: [
+    { kind: 'salawat', arabic: 'اللَّهُمَّ صَلِّ وَسَلِّمْ عَلَى نَبِيِّنَا مُحَمَّدٍ', english: 'O Allah, send blessings and peace upon our Prophet Muhammad.', source: { en: 'Salawat', ar: 'الصلاة على النبي ﷺ' } },
+  ],
+};
+
+function getMindfulReminder(preferences: SpiritualPreferences): MindfulReminder | null {
+  const pool = preferences.reminderKinds.flatMap((kind) => mindfulReminderContent[kind]);
+  return pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
+}
+
+function getReminderIntervalMinutes(preferences: SpiritualPreferences, focusMinutes: number): number {
+  if (preferences.reminderInterval !== 'adaptive') return preferences.reminderInterval;
+  return Math.min(15, Math.max(10, Math.round(focusMinutes / 3)));
+}
+
+function loadPrayerSchedule(): PrayerMonthSchedule | null {
+  try {
+    const raw = localStorage.getItem('pomodoro_prayer_schedule');
+    if (!raw) return null;
+    const saved: unknown = JSON.parse(raw);
+    if (!isPrayerMonthSchedule(saved)) {
+      console.error('Cached prayer times are invalid. Reload them from prayer settings.');
+      return null;
+    }
+    return saved;
+  } catch (error) {
+    console.error('Unable to load cached prayer times.', error);
+    return null;
+  }
 }
 
 // Helper functions
@@ -263,7 +385,7 @@ function saveStats(stats: DailyStats) {
 function isActivityEvent(value: unknown): value is ActivityEvent {
   if (!isRecord(value) ||
     typeof value.id !== 'string' ||
-    !['focus_completed', 'task_added', 'task_completed', 'task_uncompleted'].includes(String(value.type)) ||
+    !['focus_completed', 'task_added', 'task_completed', 'task_uncompleted', 'task_removed'].includes(String(value.type)) ||
     !Number.isFinite(value.timestamp) ||
     !Number.isFinite(new Date(Number(value.timestamp)).getTime())) return false;
   const isTaskEvent = value.type !== 'focus_completed';
@@ -409,9 +531,10 @@ function loadFavoritePrayerIds(): string[] {
 
 function loadSavedTimerState(): SavedTimerState | null {
   try {
-    const saved = JSON.parse(localStorage.getItem('pomodoro_timer_state') || 'null');
-    return saved && typeof saved === 'object' ? saved as SavedTimerState : null;
-  } catch {
+    const saved: unknown = JSON.parse(localStorage.getItem('pomodoro_timer_state') || 'null');
+    return saved === null || isSavedTimerState(saved) ? saved : null;
+  } catch (error) {
+    console.error('Unable to load the saved timer state.', error);
     return null;
   }
 }
@@ -429,8 +552,11 @@ function isTodoTaskArray(value: unknown): value is TodoTask[] {
 }
 
 function isPlannedSession(value: unknown): value is PlannedSession {
-  return isRecord(value) &&
-    isTodoTaskArray(value.tasks) &&
+  if (!isRecord(value) || !isTodoTaskArray(value.tasks)) return false;
+  const taskIndexesAreValid = value.tasks.length === 0
+    ? value.isActive === false && value.currentTaskIndex === 0 && value.pendingTaskIndex === 0
+    : Number(value.currentTaskIndex) < value.tasks.length && Number(value.pendingTaskIndex) < value.tasks.length;
+  return (
     Number.isFinite(value.timePerTask) && Number(value.timePerTask) >= 1 && Number(value.timePerTask) <= 480 &&
     (value.focusBlockMinutes === undefined ||
       (Array.isArray(value.focusBlockMinutes) &&
@@ -442,14 +568,14 @@ function isPlannedSession(value: unknown): value is PlannedSession {
         Number(value.completedFocusBlocks) <= Number(value.breakCount) + 1)) &&
     Number.isFinite(value.breakDuration) && Number(value.breakDuration) >= 0 && Number(value.breakDuration) <= 30 &&
     Number.isInteger(value.currentTaskIndex) && Number(value.currentTaskIndex) >= 0 &&
-    Number(value.currentTaskIndex) < value.tasks.length &&
+    taskIndexesAreValid &&
     (value.currentPhase === 'focus' || value.currentPhase === 'break') &&
     typeof value.isActive === 'boolean' &&
     Number.isFinite(value.phaseTimeLeft) && Number(value.phaseTimeLeft) >= 0 && Number(value.phaseTimeLeft) <= 480 * 60 &&
     Number.isInteger(value.breaksDone) && Number(value.breaksDone) >= 0 && Number(value.breaksDone) <= 10 &&
     Number.isInteger(value.breakCount) && Number(value.breakCount) >= 0 && Number(value.breakCount) <= 10 &&
-    Number.isInteger(value.pendingTaskIndex) && Number(value.pendingTaskIndex) >= 0 &&
-    Number(value.pendingTaskIndex) < value.tasks.length;
+    Number.isInteger(value.pendingTaskIndex) && Number(value.pendingTaskIndex) >= 0
+  );
 }
 
 function isSavedTimerState(value: unknown): value is SavedTimerState {
@@ -458,7 +584,13 @@ function isSavedTimerState(value: unknown): value is SavedTimerState {
     Number.isFinite(value.timeLeft) && Number(value.timeLeft) >= 0 && Number(value.timeLeft) <= 480 * 60 &&
     typeof value.isRunning === 'boolean' &&
     (value.isRunning ? Number.isFinite(value.deadline) : value.deadline === null) &&
-    (value.view === 'timer' || value.view === 'planner' || value.view === 'reports' || value.view === 'prayers' || value.view === 'quran') &&
+    (value.reminderNextAt === undefined || value.reminderNextAt === null || Number.isFinite(value.reminderNextAt)) &&
+    (value.reminderTimeLeftMs === undefined || value.reminderTimeLeftMs === null ||
+      (Number.isFinite(value.reminderTimeLeftMs) && Number(value.reminderTimeLeftMs) >= 0)) &&
+    (value.prayerPausePending === undefined || typeof value.prayerPausePending === 'boolean') &&
+    (value.pendingPrayerName === undefined || value.pendingPrayerName === null ||
+      prayerNames.includes(value.pendingPrayerName as PrayerName)) &&
+    (value.view === 'timer' || value.view === 'planner' || value.view === 'reports' || value.view === 'prayers' || value.view === 'quran' || value.view === 'about' || value.view === 'downloads') &&
     (value.plannedSession === null || isPlannedSession(value.plannedSession));
 }
 
@@ -468,9 +600,13 @@ function getAppStorageData(): Record<string, string> {
     'pomodoro_activity_events',
     'pomodoro_ambient_volume',
     'pomodoro_favorite_prayers',
+    'pomodoro_last_prayer_notification',
     'pomodoro_quran_preferences',
     'pomodoro_lang',
+    'pomodoro_onboarding_complete',
     'pomodoro_productivity_goals',
+    SPIRITUAL_SETTINGS_KEY,
+    'pomodoro_prayer_schedule',
     'pomodoro_sessions_completed',
     'pomodoro_settings',
     'pomodoro_theme',
@@ -503,9 +639,13 @@ function validateBackup(value: unknown): BackupPayload {
     'pomodoro_activity_events',
     'pomodoro_ambient_volume',
     'pomodoro_favorite_prayers',
+    'pomodoro_last_prayer_notification',
     'pomodoro_quran_preferences',
     'pomodoro_lang',
+    'pomodoro_onboarding_complete',
     'pomodoro_productivity_goals',
+    SPIRITUAL_SETTINGS_KEY,
+    'pomodoro_prayer_schedule',
     'pomodoro_sessions_completed',
     'pomodoro_settings',
     'pomodoro_theme',
@@ -523,6 +663,12 @@ function validateBackup(value: unknown): BackupPayload {
     }
     if (key === 'pomodoro_lang' && rawValue !== 'en' && rawValue !== 'ar') {
       throw new Error('Invalid language setting in backup.');
+    }
+    if (key === 'pomodoro_onboarding_complete' && rawValue !== 'true' && rawValue !== 'false') {
+      throw new Error('Invalid onboarding setting in backup.');
+    }
+    if (key === 'pomodoro_last_prayer_notification' && rawValue.length > 200) {
+      throw new Error('Invalid prayer notification state in backup.');
     }
     if (key === 'pomodoro_sessions_completed' && (!Number.isInteger(Number(rawValue)) || Number(rawValue) < 0)) {
       throw new Error('Invalid session count in backup.');
@@ -578,6 +724,24 @@ function validateBackup(value: unknown): BackupPayload {
         (preferences.miniPlayerHidden !== undefined && typeof preferences.miniPlayerHidden !== 'boolean')) {
         throw new Error('Invalid Quran preferences in backup.');
       }
+    } else if (key === SPIRITUAL_SETTINGS_KEY) {
+      const preferences: unknown = JSON.parse(rawValue);
+      if (!isSpiritualPreferences(preferences)) {
+        throw new Error('Invalid spiritual reminder preferences in backup.');
+      }
+      data[key] = JSON.stringify({
+        ...preferences,
+        reminderTone: preferences.reminderAudioVersion === 2 && preferences.reminderTone,
+        reminderSpeech: preferences.reminderAudioVersion === 2 && preferences.reminderSpeech,
+        reminderAudioVersion: 2,
+        prayerSpeech: preferences.prayerAudioVersion === 2 && preferences.prayerSpeech === true,
+        prayerAudioVersion: 2,
+      });
+      return;
+    } else if (key === 'pomodoro_prayer_schedule') {
+      if (!isPrayerMonthSchedule(JSON.parse(rawValue))) {
+        throw new Error('Invalid prayer time schedule in backup.');
+      }
     } else if (/^pomodoro_stats_\d{4}-\d{2}-\d{2}$/.test(key)) {
       const stats: unknown = JSON.parse(rawValue);
       const date = key.slice('pomodoro_stats_'.length);
@@ -602,13 +766,23 @@ function validateBackup(value: unknown): BackupPayload {
   };
 }
 
-function formatDuration(minutes: number): string {
+function formatDuration(
+  minutes: number,
+  labels?: { hoursShort: string; minutesShort: string },
+): string {
   const rounded = Math.round(minutes);
   const hours = Math.floor(rounded / 60);
   const remainingMinutes = rounded % 60;
-  if (hours && remainingMinutes) return `${hours}h ${remainingMinutes}m`;
-  if (hours) return `${hours}h`;
-  return `${remainingMinutes}m`;
+  if (!labels) {
+    if (hours && remainingMinutes) return `${hours}h ${remainingMinutes}m`;
+    if (hours) return `${hours}h`;
+    return `${remainingMinutes}m`;
+  }
+  const hourLabel = labels?.hoursShort ?? 'h';
+  const minuteLabel = labels?.minutesShort ?? 'm';
+  if (hours && remainingMinutes) return `${hours} ${hourLabel} ${remainingMinutes} ${minuteLabel}`;
+  if (hours) return `${hours} ${hourLabel}`;
+  return `${remainingMinutes} ${minuteLabel}`;
 }
 
 interface GoalStepperProps {
@@ -688,14 +862,23 @@ function buildReports(events: ActivityEvent[], period: ReportPeriod, dailyFocusG
   });
 
   return dates.map((date) => {
-    const dayEvents = events.filter((event) => getDateKey(new Date(event.timestamp)) === date);
+    const dayEvents = events
+      .filter((event) => getDateKey(new Date(event.timestamp)) === date)
+      .sort((left, right) => left.timestamp - right.timestamp);
     const focusEvents = dayEvents.filter((event) => event.type === 'focus_completed');
-    const plannedEvents = dayEvents.filter((event) => event.type === 'task_added' && event.taskId);
-    const taskIds = new Set(plannedEvents.map((event) => event.taskId as string));
+    const taskIds = new Set<string>();
     const taskStatus = new Map<string, boolean>();
-    dayEvents
-      .filter((event) => event.taskId && (event.type === 'task_completed' || event.type === 'task_uncompleted'))
-      .forEach((event) => taskStatus.set(event.taskId as string, event.type === 'task_completed'));
+    dayEvents.forEach((event) => {
+      if (!event.taskId) return;
+      if (event.type === 'task_added') taskIds.add(event.taskId);
+      if (event.type === 'task_removed') {
+        taskIds.delete(event.taskId);
+        taskStatus.delete(event.taskId);
+      }
+      if (event.type === 'task_completed' || event.type === 'task_uncompleted') {
+        taskStatus.set(event.taskId, event.type === 'task_completed');
+      }
+    });
 
     const focusMinutes = focusEvents.reduce((total, event) => total + (event.minutes || 0), 0);
     const plannedTasks = taskIds.size;
@@ -752,11 +935,33 @@ const modeConfig: Record<TimerMode, { label: string; color: string; bgColor: str
 };
 
 export default function App() {
+  const isNativeApp = Capacitor.isNativePlatform() || '__TAURI_INTERNALS__' in window;
   const [savedTimer] = useState<SavedTimerState | null>(loadSavedTimerState);
   const [settings, setSettings] = useState<TimerSettings>(loadSettings);
   const [theme, setTheme] = useState<Theme>(loadTheme);
   const [language, setLanguage] = useState<Language>(loadLanguage);
-  const [view, setView] = useState<View>(savedTimer?.view || 'timer');
+  const [view, setView] = useState<View>(
+    savedTimer?.view === 'downloads' && isNativeApp ? 'timer' : savedTimer?.view || 'timer',
+  );
+  const [showMobileNavigation, setShowMobileNavigation] = useState(false);
+  const [showIosSetup, setShowIosSetup] = useState(false);
+  const [spiritualSettings, setSpiritualSettings] = useState<SpiritualPreferences>(loadSpiritualPreferences);
+  const [tempSpiritualSettings, setTempSpiritualSettings] = useState<SpiritualPreferences>(spiritualSettings);
+  const [prayerSchedule, setPrayerSchedule] = useState<PrayerMonthSchedule | null>(loadPrayerSchedule);
+  const [prayerLoadState, setPrayerLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [showOnboarding, setShowOnboarding] = useState(() => localStorage.getItem('pomodoro_onboarding_complete') !== 'true');
+  const [showProductTour, setShowProductTour] = useState(false);
+  const [activeMindfulReminder, setActiveMindfulReminder] = useState<MindfulReminder | null>(null);
+  const [prayerNotification, setPrayerNotification] = useState<PrayerName | null>(savedTimer?.pendingPrayerName ?? null);
+  const [prayerPausePending, setPrayerPausePending] = useState(() => savedTimer?.prayerPausePending === true);
+  const [prayerReminderTest, setPrayerReminderTest] = useState(false);
+  const [prayerAudioStatus, setPrayerAudioStatus] = useState('');
+  const [isQuranPlaying, setIsQuranPlaying] = useState(false);
+  const [isQuranMiniPlayerVisible, setIsQuranMiniPlayerVisible] = useState(false);
+  const [reminderAudioStatus, setReminderAudioStatus] = useState('');
+  const [spiritualSaveError, setSpiritualSaveError] = useState('');
+  const [reminderNextAt, setReminderNextAt] = useState<number | null>(savedTimer?.reminderNextAt ?? null);
+  const [reminderTimeLeftMs, setReminderTimeLeftMs] = useState<number | null>(savedTimer?.reminderTimeLeftMs ?? null);
   const [mode, setMode] = useState<TimerMode>(savedTimer?.mode || 'focus');
   const [timeLeft, setTimeLeft] = useState(() => {
     if (!savedTimer) return settings.focus * 60;
@@ -773,6 +978,7 @@ export default function App() {
   const [todos, setTodos] = useState<TodoTask[]>(loadTodos);
   const [newTodo, setNewTodo] = useState('');
   const [plannedSession, setPlannedSession] = useState<PlannedSession | null>(savedTimer?.plannedSession || null);
+  const [completionSummary, setCompletionSummary] = useState<CompletionSummary | null>(null);
   const [plannerHours, setPlannerHours] = useState(2);
   const [plannerBreakCount, setPlannerBreakCount] = useState(2);
   const [plannerBreakDuration, setPlannerBreakDuration] = useState(5);
@@ -787,16 +993,126 @@ export default function App() {
   const [favoritePrayerIds, setFavoritePrayerIds] = useState<string[]>(loadFavoritePrayerIds);
   const [backupStatus, setBackupStatus] = useState('');
   const [backupReloadPending, setBackupReloadPending] = useState(false);
+  const [isOnline, setIsOnline] = useState(() => navigator.onLine);
+  const [offlineReady, setOfflineReady] = useState(false);
+  const [updateReady, setUpdateReady] = useState(false);
   const [activityEvents, setActivityEvents] = useState<ActivityEvent[]>(loadActivityEvents);
   const [goals, setGoals] = useState<ProductivityGoals>(loadProductivityGoals);
   const [tempGoals, setTempGoals] = useState<ProductivityGoals>(goals);
   const [plannerTasks, setPlannerTasks] = useState<TodoTask[]>([]);
   const [plannerNewTask, setPlannerNewTask] = useState('');
+  const [sessionTaskInput, setSessionTaskInput] = useState('');
+  const [editingSessionTaskId, setEditingSessionTaskId] = useState<string | null>(null);
+  const [sessionTaskDraft, setSessionTaskDraft] = useState('');
   const intervalRef = useRef<number | null>(null);
   const deadlineRef = useRef<number | null>(savedTimer?.deadline || null);
+  const reminderNextAtRef = useRef<number | null>(savedTimer?.reminderNextAt ?? null);
+  const prayerNotificationKeyRef = useRef<string | null>(localStorage.getItem('pomodoro_last_prayer_notification'));
+  const reminderDismissTimeoutRef = useRef<number | null>(null);
+  const reminderSettingsRef = useRef(spiritualSettings);
+  const prayerCueRef = useRef<HTMLAudioElement | null>(null);
+  const prayerScheduleRef = useRef(prayerSchedule);
+  const quranPlayingRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const backupFileInputRef = useRef<HTMLInputElement | null>(null);
+  const prayerDismissTimeoutRef = useRef<number | null>(null);
+  const completionSummaryTimeoutRef = useRef<number | null>(null);
+  const prayerConfirmButtonRef = useRef<HTMLButtonElement | null>(null);
   const t = translations[language];
+  const handleTourChange = useCallback((active: boolean) => setShowProductTour(active), []);
+  const handleQuranPlaybackChange = useCallback((playing: boolean) => {
+    quranPlayingRef.current = playing;
+    setIsQuranPlaying(playing);
+  }, []);
+  const handleQuranMiniPlayerVisibilityChange = useCallback((visible: boolean) => {
+    setIsQuranMiniPlayerVisible(visible);
+  }, []);
+  const dismissCompletionSummary = useCallback(() => {
+    if (completionSummaryTimeoutRef.current !== null) {
+      window.clearTimeout(completionSummaryTimeoutRef.current);
+      completionSummaryTimeoutRef.current = null;
+    }
+    setCompletionSummary(null);
+  }, []);
+  const stopPrayerCue = useCallback(() => {
+    prayerCueRef.current?.pause();
+    prayerCueRef.current = null;
+  }, []);
+  const showCompletionSummary = useCallback((summary: CompletionSummary, dismissAfterMs = 0) => {
+    dismissCompletionSummary();
+    setCompletionSummary(summary);
+    if (dismissAfterMs > 0) {
+      completionSummaryTimeoutRef.current = window.setTimeout(() => {
+        completionSummaryTimeoutRef.current = null;
+        setCompletionSummary(null);
+      }, dismissAfterMs);
+    }
+  }, [dismissCompletionSummary]);
+  const navigationItems = [
+    { id: 'timer' as const, label: t.timer, Icon: Timer },
+    { id: 'planner' as const, label: t.planner, Icon: ListTodo },
+    { id: 'reports' as const, label: t.reports, Icon: BarChart3 },
+    ...(spiritualSettings.islamicToolsEnabled
+      ? [
+        { id: 'prayers' as const, label: t.prayers, Icon: HeartHandshake },
+        { id: 'quran' as const, label: t.quran, Icon: BookOpen },
+      ]
+      : []),
+    { id: 'about' as const, label: t.about, Icon: Info },
+  ];
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    const handleOfflineReady = () => setOfflineReady(true);
+    const handleUpdateReady = () => setUpdateReady(true);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('focus-to-work:offline-ready', handleOfflineReady);
+    window.addEventListener('focus-to-work:update-ready', handleUpdateReady);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('focus-to-work:offline-ready', handleOfflineReady);
+      window.removeEventListener('focus-to-work:update-ready', handleUpdateReady);
+    };
+  }, []);
+  useEffect(() => () => {
+    if (reminderDismissTimeoutRef.current !== null) window.clearTimeout(reminderDismissTimeoutRef.current);
+    if (prayerDismissTimeoutRef.current !== null) window.clearTimeout(prayerDismissTimeoutRef.current);
+    if (completionSummaryTimeoutRef.current !== null) window.clearTimeout(completionSummaryTimeoutRef.current);
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    stopPrayerCue();
+  }, [stopPrayerCue]);
+  useEffect(() => {
+    if (prayerNotification && prayerPausePending) prayerConfirmButtonRef.current?.focus();
+  }, [prayerNotification, prayerPausePending]);
+  useEffect(() => {
+    reminderSettingsRef.current = spiritualSettings;
+  }, [spiritualSettings]);
+  useEffect(() => {
+    prayerScheduleRef.current = prayerSchedule;
+    if (!prayerSchedule) return;
+    try {
+      localStorage.setItem('pomodoro_prayer_schedule', JSON.stringify(prayerSchedule));
+    } catch (error) {
+      console.error('Unable to save cached prayer times.', error);
+      setPrayerLoadState('error');
+    }
+  }, [prayerSchedule]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(SPIRITUAL_SETTINGS_KEY, JSON.stringify(spiritualSettings));
+      setSpiritualSaveError('');
+    } catch (error) {
+      console.error('Unable to save spiritual reminder preferences.', error);
+      setSpiritualSaveError(t.settingsStorageError);
+    }
+  }, [spiritualSettings, t.settingsStorageError]);
+  useEffect(() => {
+    if (!spiritualSettings.islamicToolsEnabled && (view === 'quran' || view === 'prayers')) {
+      setView('timer');
+    }
+  }, [spiritualSettings.islamicToolsEnabled, view]);
   const logActivity = (event: Omit<ActivityEvent, 'id' | 'timestamp'>) => {
     recordActivity(event);
     setActivityEvents(loadActivityEvents());
@@ -806,13 +1122,19 @@ export default function App() {
   const periodEvents = activityEvents
     .filter((event) => reportDateKeys.has(getDateKey(new Date(event.timestamp))))
     .sort((a, b) => a.timestamp - b.timestamp);
-  const plannedTaskIds = new Set(
-    periodEvents.filter((event) => event.type === 'task_added' && event.taskId).map((event) => event.taskId as string),
-  );
+  const plannedTaskIds = new Set<string>();
   const periodTaskStatus = new Map<string, boolean>();
-  periodEvents
-    .filter((event) => event.taskId && (event.type === 'task_completed' || event.type === 'task_uncompleted'))
-    .forEach((event) => periodTaskStatus.set(event.taskId as string, event.type === 'task_completed'));
+  periodEvents.forEach((event) => {
+    if (!event.taskId) return;
+    if (event.type === 'task_added') plannedTaskIds.add(event.taskId);
+    if (event.type === 'task_removed') {
+      plannedTaskIds.delete(event.taskId);
+      periodTaskStatus.delete(event.taskId);
+    }
+    if (event.type === 'task_completed' || event.type === 'task_uncompleted') {
+      periodTaskStatus.set(event.taskId, event.type === 'task_completed');
+    }
+  });
   const reportTotals = reports.reduce((total, day) => ({
     focusMinutes: total.focusMinutes + day.focusMinutes,
     focusSessions: total.focusSessions + day.focusSessions,
@@ -899,6 +1221,7 @@ export default function App() {
         setTheme(event.data.theme);
       }
     };
+
     window.addEventListener('message', receiveTheme);
     return () => window.removeEventListener('message', receiveTheme);
   }, []);
@@ -961,9 +1284,200 @@ export default function App() {
       deadline: isRunning ? deadlineRef.current : null,
       view,
       plannedSession,
+      reminderNextAt,
+      reminderTimeLeftMs,
+      prayerPausePending,
+      pendingPrayerName: prayerPausePending ? prayerNotification : null,
     };
     localStorage.setItem('pomodoro_timer_state', JSON.stringify(state));
-  }, [mode, timeLeft, isRunning, view, plannedSession]);
+  }, [mode, timeLeft, isRunning, view, plannedSession, reminderNextAt, reminderTimeLeftMs, prayerPausePending, prayerNotification]);
+
+  const clearMindfulReminder = useCallback(() => {
+    reminderNextAtRef.current = null;
+    setReminderNextAt(null);
+    setReminderTimeLeftMs(null);
+  }, []);
+  useEffect(() => {
+    if (!spiritualSettings.islamicToolsEnabled || !spiritualSettings.remindersEnabled ||
+      spiritualSettings.reminderKinds.length === 0) {
+      clearMindfulReminder();
+    }
+  }, [
+    spiritualSettings.islamicToolsEnabled,
+    spiritualSettings.remindersEnabled,
+    spiritualSettings.reminderKinds,
+    clearMindfulReminder,
+  ]);
+
+  const scheduleMindfulReminder = useCallback((focusMinutes: number) => {
+    const preferences = reminderSettingsRef.current;
+    if (!preferences.islamicToolsEnabled || !preferences.remindersEnabled || preferences.reminderKinds.length === 0) {
+      clearMindfulReminder();
+      return;
+    }
+    const interval = getReminderIntervalMinutes(preferences, focusMinutes);
+    const nextAt = Date.now() + interval * 60 * 1000;
+    reminderNextAtRef.current = nextAt;
+    setReminderNextAt(nextAt);
+    setReminderTimeLeftMs(null);
+  }, [clearMindfulReminder]);
+
+  const pauseMindfulReminder = useCallback(() => {
+    if (reminderNextAtRef.current === null) return;
+    setReminderTimeLeftMs(Math.max(0, reminderNextAtRef.current - Date.now()));
+    reminderNextAtRef.current = null;
+    setReminderNextAt(null);
+  }, []);
+
+  const playReminderTone = useCallback(() => {
+    if (!reminderSettingsRef.current.reminderTone) return;
+    try {
+      const AudioContextClass = window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextClass) {
+        setReminderAudioStatus(t.reminderAudioUnavailable);
+        return;
+      }
+      const audioCtx = audioContextRef.current || new AudioContextClass();
+      audioContextRef.current = audioCtx;
+      if (audioCtx.state === 'suspended') void audioCtx.resume();
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.value = 660;
+      gainNode.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.035, audioCtx.currentTime + 0.02);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.22);
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      oscillator.start();
+      oscillator.stop(audioCtx.currentTime + 0.24);
+    } catch (error) {
+      console.error('Unable to play the gentle reminder tone.', error);
+      setReminderAudioStatus(t.reminderAudioUnavailable);
+    }
+  }, [t.reminderAudioUnavailable]);
+
+  const speakMindfulReminder = useCallback((reminder: MindfulReminder) => {
+    if (!reminderSettingsRef.current.reminderSpeech) return;
+    if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) {
+      setReminderAudioStatus(t.reminderSpeechUnavailable);
+      return;
+    }
+
+    try {
+      const speech = window.speechSynthesis;
+      const utterance = new SpeechSynthesisUtterance(reminder.arabic);
+      const voices = speech.getVoices();
+      const arabicVoice = voices.find((voice) => /^ar-eg(?:-|$)/i.test(voice.lang)) ??
+        voices.find((voice) => /^ar(?:-|$)/i.test(voice.lang));
+      speech.cancel();
+      utterance.lang = 'ar-EG';
+      utterance.rate = 0.86;
+      utterance.pitch = 1;
+      utterance.volume = 0.9;
+      utterance.voice = arabicVoice ?? null;
+      utterance.onerror = (event) => {
+        if (event.error === 'canceled' || event.error === 'interrupted') return;
+        console.error('Unable to speak the mindful reminder.', event.error);
+        setReminderAudioStatus(t.reminderSpeechUnavailable);
+      };
+      speech.speak(utterance);
+    } catch (error) {
+      console.error('Unable to speak the mindful reminder.', error);
+      setReminderAudioStatus(t.reminderSpeechUnavailable);
+    }
+  }, [t.reminderSpeechUnavailable]);
+
+  const showMindfulNudge = useCallback((reminder: MindfulReminder) => {
+    setActiveMindfulReminder(reminder);
+    setReminderAudioStatus('');
+    if (reminderDismissTimeoutRef.current !== null) {
+      window.clearTimeout(reminderDismissTimeoutRef.current);
+    }
+    reminderDismissTimeoutRef.current = window.setTimeout(() => {
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+      setActiveMindfulReminder(null);
+    }, 12000);
+
+    const preferences = reminderSettingsRef.current;
+    if (preferences.reminderTone) playReminderTone();
+    if (preferences.reminderSpeech) speakMindfulReminder(reminder);
+  }, [playReminderTone, speakMindfulReminder]);
+
+  const playPrayerReminder = useCallback(() => {
+    if (!reminderSettingsRef.current.prayerSpeech) return;
+    setPrayerAudioStatus('');
+    stopPrayerCue();
+    const audio = new Audio(prayerCueUrl);
+    audio.volume = 0.58;
+    prayerCueRef.current = audio;
+    audio.onended = () => {
+      if (prayerCueRef.current === audio) prayerCueRef.current = null;
+    };
+    void audio.play().catch((error: unknown) => {
+      console.error('Unable to play the recorded prayer cue.', error);
+      if (prayerCueRef.current === audio) setPrayerAudioStatus(t.prayerAudioUnavailable);
+    });
+  }, [stopPrayerCue, t.prayerAudioUnavailable]);
+
+  const checkPrayerSchedule = useCallback((now: number) => {
+    const preferences = reminderSettingsRef.current;
+    const schedule = prayerScheduleRef.current;
+    if (!preferences.islamicToolsEnabled || preferences.prayerMode === 'off' || !schedule) return;
+    if (schedule.location.countryCode !== preferences.prayerCountryCode ||
+      schedule.location.geonameId !== preferences.prayerPlaceId ||
+      schedule.method !== preferences.prayerMethod) return;
+    const monthParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: schedule.timezone,
+      year: 'numeric',
+      month: '2-digit',
+    }).formatToParts(new Date(now));
+    const month = `${monthParts.find((part) => part.type === 'year')?.value}-${monthParts.find((part) => part.type === 'month')?.value}`;
+    if (schedule.month !== month) return;
+    const localDateTime = getPrayerDateTime(new Date(now), schedule.timezone);
+    const day = schedule.days.find((item) => item.date === localDateTime.date);
+    if (!day) return;
+    const [currentHour, currentMinute] = localDateTime.time.split(':').map(Number);
+    const currentMinutes = currentHour * 60 + currentMinute;
+
+    for (const prayerName of prayerNames) {
+      const [hour, minute] = day.times[prayerName].split(':').map(Number);
+      const minutesSincePrayer = currentMinutes - (hour * 60 + minute);
+      const key = `${preferences.prayerPlaceId}-${preferences.prayerMethod}-${localDateTime.date}-${prayerName}`;
+      if (minutesSincePrayer < 0 || minutesSincePrayer > 2 || prayerNotificationKeyRef.current === key) continue;
+
+      prayerNotificationKeyRef.current = key;
+      try {
+        localStorage.setItem('pomodoro_last_prayer_notification', key);
+      } catch (error) {
+        console.error('Unable to save the last prayer reminder.', error);
+      }
+      setPrayerReminderTest(false);
+      setPrayerNotification(prayerName);
+      playPrayerReminder();
+      if (preferences.prayerMode === 'pause' && !prayerPausePending) {
+        if (prayerDismissTimeoutRef.current !== null) {
+          window.clearTimeout(prayerDismissTimeoutRef.current);
+          prayerDismissTimeoutRef.current = null;
+        }
+        const remaining = deadlineRef.current === null
+          ? timeLeft
+          : Math.max(0, Math.ceil((deadlineRef.current - now) / 1000));
+        deadlineRef.current = null;
+        setTimeLeft(remaining);
+        pauseMindfulReminder();
+        setPrayerPausePending(true);
+        setIsRunning(false);
+      } else if (preferences.prayerMode === 'notice') {
+        if (prayerDismissTimeoutRef.current !== null) {
+          window.clearTimeout(prayerDismissTimeoutRef.current);
+        }
+        prayerDismissTimeoutRef.current = window.setTimeout(() => setPrayerNotification(null), 12000);
+      }
+      break;
+    }
+  }, [pauseMindfulReminder, playPrayerReminder, prayerPausePending, timeLeft]);
 
   const handleTimerComplete = useCallback(() => {
     setIsRunning(false);
@@ -987,7 +1501,17 @@ export default function App() {
         });
         setActivityEvents(loadActivityEvents());
         const nextCompletedFocusBlocks = completedFocusBlocks + 1;
-        if (nextCompletedFocusBlocks >= focusBlockCount) {
+        const isSessionFinished = nextCompletedFocusBlocks >= focusBlockCount;
+        const completedFocusMinutes = getCompletedFocusMinutes(plannedSession, nextCompletedFocusBlocks);
+        showCompletionSummary({
+          kind: isSessionFinished ? 'session' : 'focus',
+          focusMinutes: completedFocusMinutes,
+          elapsedMinutes: completedFocusMinutes + completedFocusBreaks * plannedSession.breakDuration,
+          completedTasks: plannedSession.tasks.filter((task) => task.completed).length,
+          totalTasks: plannedSession.tasks.length,
+        }, isSessionFinished ? 0 : 20000);
+        if (isSessionFinished) {
+          clearMindfulReminder();
           setPlannedSession({
             ...plannedSession,
             isActive: false,
@@ -998,6 +1522,7 @@ export default function App() {
           return;
         }
         if (completedFocusBreaks < plannedSession.breakCount) {
+          clearMindfulReminder();
           const nextSession = {
             ...plannedSession,
             currentPhase: 'break' as const,
@@ -1020,6 +1545,7 @@ export default function App() {
           setTimeLeft(nextSession.phaseTimeLeft);
           deadlineRef.current = Date.now() + nextSession.phaseTimeLeft * 1000;
           setIsRunning(true);
+          scheduleMindfulReminder(getFocusBlockMinutes(nextSession, nextCompletedFocusBlocks));
         }
       } else {
         const completedFocusBlocks = getCompletedFocusBlocks(plannedSession);
@@ -1027,6 +1553,14 @@ export default function App() {
           ? completedFocusBlocks + 1
           : completedFocusBlocks;
         const completedBreaks = getCompletedBreaks(plannedSession) + 1;
+        const completedFocusMinutes = getCompletedFocusMinutes(plannedSession, completedFocusBlocks);
+        showCompletionSummary({
+          kind: 'break',
+          focusMinutes: completedFocusMinutes,
+          elapsedMinutes: completedFocusMinutes + completedBreaks * plannedSession.breakDuration,
+          completedTasks: plannedSession.tasks.filter((task) => task.completed).length,
+          totalTasks: plannedSession.tasks.length,
+        }, 20000);
         const nextSession = {
           ...plannedSession,
           breaksDone: completedBreaks,
@@ -1038,6 +1572,7 @@ export default function App() {
         setTimeLeft(nextSession.phaseTimeLeft);
         deadlineRef.current = Date.now() + nextSession.phaseTimeLeft * 1000;
         setIsRunning(true);
+        scheduleMindfulReminder(getFocusBlockMinutes(nextSession, nextFocusBlockIndex));
       }
       return;
     }
@@ -1049,11 +1584,19 @@ export default function App() {
       const newSessions = sessionsCompleted + 1;
       setSessionsCompleted(newSessions);
       localStorage.setItem('pomodoro_sessions_completed', String(newSessions));
+      showCompletionSummary({
+        kind: 'focus',
+        focusMinutes: settings.focus,
+        elapsedMinutes: settings.focus,
+        completedTasks: todos.filter((task) => task.completed).length,
+        totalTasks: todos.length,
+      });
 
       // Play notification sound
       playNotification();
 
       // Switch to break
+      clearMindfulReminder();
       if (newSessions % settings.longBreakInterval === 0) {
         setMode('longBreak');
         setTimeLeft(settings.longBreak * 60);
@@ -1063,12 +1606,21 @@ export default function App() {
       }
     } else {
       // Break is over, switch back to focus
+      const breakMinutes = settings[mode === 'shortBreak' ? 'shortBreak' : 'longBreak'];
+      showCompletionSummary({
+        kind: 'break',
+        focusMinutes: 0,
+        elapsedMinutes: breakMinutes,
+        completedTasks: todos.filter((task) => task.completed).length,
+        totalTasks: todos.length,
+      });
       playNotification();
       setMode('focus');
       setTimeLeft(settings.focus * 60);
+      scheduleMindfulReminder(settings.focus);
     }
     deadlineRef.current = null;
-  }, [mode, sessionsCompleted, settings, plannedSession]);
+  }, [mode, sessionsCompleted, settings, plannedSession, todos, clearMindfulReminder, scheduleMindfulReminder, showCompletionSummary]);
 
   const playNotification = () => {
     try {
@@ -1077,19 +1629,25 @@ export default function App() {
       audioContextRef.current = audioCtx;
       if (audioCtx.state === 'suspended') void audioCtx.resume();
 
-      [523, 659, 784, 1046].forEach((frequency, index) => {
-        const oscillator = audioCtx.createOscillator();
-        const gainNode = audioCtx.createGain();
-        const start = audioCtx.currentTime + index * 0.28;
-        oscillator.type = 'sine';
-        oscillator.frequency.value = frequency;
-        gainNode.gain.setValueAtTime(0.0001, start);
-        gainNode.gain.exponentialRampToValueAtTime(0.2, start + 0.03);
-        gainNode.gain.exponentialRampToValueAtTime(0.0001, start + 0.34);
-        oscillator.connect(gainNode);
-        gainNode.connect(audioCtx.destination);
-        oscillator.start(start);
-        oscillator.stop(start + 0.36);
+      const frequencies = [523, 659, 784, 1046];
+      const noteInterval = 0.28;
+      const noteDuration = 0.34;
+      const cycleDuration = noteInterval * (frequencies.length - 1) + noteDuration + 0.18;
+      frequencies.forEach((frequency, index) => {
+        for (let cycle = 0; cycle < 4; cycle += 1) {
+          const oscillator = audioCtx.createOscillator();
+          const gainNode = audioCtx.createGain();
+          const start = audioCtx.currentTime + cycle * cycleDuration + index * noteInterval;
+          oscillator.type = 'sine';
+          oscillator.frequency.value = frequency;
+          gainNode.gain.setValueAtTime(0.0001, start);
+          gainNode.gain.exponentialRampToValueAtTime(0.14, start + 0.03);
+          gainNode.gain.exponentialRampToValueAtTime(0.0001, start + noteDuration);
+          oscillator.connect(gainNode);
+          gainNode.connect(audioCtx.destination);
+          oscillator.start(start);
+          oscillator.stop(start + noteDuration + 0.02);
+        }
       });
     } catch {
       // The timer remains usable when Web Audio is unavailable.
@@ -1101,11 +1659,35 @@ export default function App() {
     if (isRunning) {
       intervalRef.current = window.setInterval(() => {
         if (deadlineRef.current === null) return;
+        const now = Date.now();
         const remaining = Math.max(0, Math.ceil((deadlineRef.current - Date.now()) / 1000));
         setTimeLeft(remaining);
         if (plannedSession?.isActive) {
           setPlannedSession((session) => session ? { ...session, phaseTimeLeft: remaining } : session);
         }
+        const focusIsActive = plannedSession?.isActive
+          ? plannedSession.currentPhase === 'focus'
+          : mode === 'focus';
+        if (focusIsActive) {
+          const nextReminderAt = reminderNextAtRef.current;
+          if (nextReminderAt !== null) {
+            const reminderTimeLeft = Math.max(0, nextReminderAt - now);
+            setReminderTimeLeftMs(Math.ceil(reminderTimeLeft / 1000) * 1000);
+            if (reminderTimeLeft === 0) {
+              const reminder = getMindfulReminder(reminderSettingsRef.current);
+              if (reminder) {
+                showMindfulNudge(reminder);
+                const focusMinutes = plannedSession?.isActive
+                  ? Math.max(1, Math.ceil(plannedSession.phaseTimeLeft / 60))
+                  : settings.focus;
+                scheduleMindfulReminder(focusMinutes);
+              } else {
+                clearMindfulReminder();
+              }
+            }
+          }
+        }
+        checkPrayerSchedule(now);
         if (remaining === 0) handleTimerComplete();
       }, 250);
     } else if (intervalRef.current) {
@@ -1118,12 +1700,36 @@ export default function App() {
         clearInterval(intervalRef.current);
       }
     };
-  }, [isRunning, handleTimerComplete]);
+  }, [
+    isRunning,
+    handleTimerComplete,
+    mode,
+    plannedSession,
+    settings.focus,
+    showMindfulNudge,
+    scheduleMindfulReminder,
+    clearMindfulReminder,
+    checkPrayerSchedule,
+  ]);
 
   const handleStart = () => {
+    if (prayerPausePending) return;
+    dismissCompletionSummary();
     const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!audioContextRef.current) audioContextRef.current = new AudioContextClass();
     if (audioContextRef.current.state === 'suspended') void audioContextRef.current.resume();
+    if (reminderTimeLeftMs !== null) {
+      const nextAt = Date.now() + reminderTimeLeftMs;
+      reminderNextAtRef.current = nextAt;
+      setReminderNextAt(nextAt);
+      setReminderTimeLeftMs(null);
+    } else if (reminderNextAtRef.current === null &&
+      ((plannedSession?.isActive && plannedSession.currentPhase === 'focus') || (!plannedSession?.isActive && mode === 'focus'))) {
+      const focusMinutes = plannedSession?.isActive
+        ? Math.max(1, Math.ceil(plannedSession.phaseTimeLeft / 60))
+        : settings.focus;
+      scheduleMindfulReminder(focusMinutes);
+    }
     deadlineRef.current = Date.now() + timeLeft * 1000;
     setIsRunning(true);
   };
@@ -1134,12 +1740,16 @@ export default function App() {
       deadlineRef.current = null;
       setTimeLeft(remaining);
     }
+    pauseMindfulReminder();
     setIsRunning(false);
   };
 
   const handleReset = () => {
+    if (prayerPausePending) return;
+    dismissCompletionSummary();
     setIsRunning(false);
     deadlineRef.current = null;
+    clearMindfulReminder();
     if (plannedSession?.isActive) {
       setPlannedSession({
         ...plannedSession,
@@ -1158,8 +1768,11 @@ export default function App() {
   };
 
   const handleModeChange = (newMode: TimerMode) => {
+    if (prayerPausePending) return;
+    dismissCompletionSummary();
     setIsRunning(false);
     deadlineRef.current = null;
+    clearMindfulReminder();
     setMode(newMode);
     const duration = settings[newMode === 'shortBreak' ? 'shortBreak' : newMode === 'longBreak' ? 'longBreak' : 'focus'];
     setTimeLeft(duration * 60);
@@ -1168,6 +1781,7 @@ export default function App() {
   const handleSaveSettings = () => {
     setSettings(tempSettings);
     setGoals(tempGoals);
+    handleSaveSpiritualSettings();
     setShowSettings(false);
     // Reset timer if not running
     if (!isRunning) {
@@ -1179,7 +1793,142 @@ export default function App() {
   const handleOpenSettings = () => {
     setTempSettings(settings);
     setTempGoals(goals);
+    setTempSpiritualSettings(spiritualSettings);
     setShowSettings(true);
+  };
+
+  const handleSaveSpiritualSettings = () => {
+    reminderSettingsRef.current = tempSpiritualSettings;
+    setSpiritualSettings(tempSpiritualSettings);
+    if (!tempSpiritualSettings.reminderSpeech || !tempSpiritualSettings.remindersEnabled ||
+      !tempSpiritualSettings.islamicToolsEnabled || tempSpiritualSettings.reminderKinds.length === 0) {
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    }
+    if (!tempSpiritualSettings.islamicToolsEnabled || !tempSpiritualSettings.remindersEnabled ||
+      tempSpiritualSettings.reminderKinds.length === 0) {
+      clearMindfulReminder();
+    } else if (isRunning && ((plannedSession?.isActive && plannedSession.currentPhase === 'focus') ||
+      (!plannedSession?.isActive && mode === 'focus'))) {
+      const focusMinutes = plannedSession?.isActive
+        ? Math.max(1, Math.ceil(plannedSession.phaseTimeLeft / 60))
+        : tempSettings.focus;
+      scheduleMindfulReminder(focusMinutes);
+    }
+    if (!tempSpiritualSettings.islamicToolsEnabled) {
+      setActiveMindfulReminder(null);
+      setPrayerNotification(null);
+      setPrayerReminderTest(false);
+      setPrayerAudioStatus('');
+      stopPrayerCue();
+    } else if (tempSpiritualSettings.prayerMode === 'off') {
+      setPrayerNotification(null);
+      setPrayerReminderTest(false);
+      setPrayerAudioStatus('');
+      stopPrayerCue();
+    } else if (!tempSpiritualSettings.prayerSpeech) {
+      setPrayerAudioStatus('');
+      stopPrayerCue();
+    }
+    if (prayerPausePending && (!tempSpiritualSettings.islamicToolsEnabled || tempSpiritualSettings.prayerMode !== 'pause')) {
+      setPrayerPausePending(false);
+      setPrayerNotification(null);
+    }
+  };
+
+  const handleTestMindfulReminder = () => {
+    const reminder = getMindfulReminder(tempSpiritualSettings);
+    handleSaveSettings();
+    if (reminder) showMindfulNudge(reminder);
+  };
+
+  const handleTestPrayerReminder = () => {
+    if (prayerPausePending || tempSpiritualSettings.prayerMode === 'off') return;
+    handleSaveSettings();
+    if (prayerDismissTimeoutRef.current !== null) {
+      window.clearTimeout(prayerDismissTimeoutRef.current);
+    }
+    setPrayerReminderTest(true);
+    setPrayerNotification('Dhuhr');
+    setPrayerAudioStatus('');
+    prayerDismissTimeoutRef.current = window.setTimeout(() => {
+      setPrayerNotification(null);
+      setPrayerReminderTest(false);
+      prayerDismissTimeoutRef.current = null;
+    }, 12000);
+    playPrayerReminder();
+  };
+
+  const handleLoadPrayerTimes = async () => {
+    const city = tempSpiritualSettings.prayerCity.trim();
+    const countryCode = tempSpiritualSettings.prayerCountryCode;
+    const { prayerPlaceId, prayerLatitude, prayerLongitude, prayerTimezone } = tempSpiritualSettings;
+    if (!countryCode || !city || !prayerPlaceId || prayerLatitude === null ||
+      prayerLongitude === null || !prayerTimezone) {
+      setPrayerLoadState('error');
+      return;
+    }
+    const countryName = new Intl.DisplayNames(['en'], { type: 'region' }).of(countryCode);
+    if (!countryName) {
+      setPrayerLoadState('error');
+      return;
+    }
+    setPrayerLoadState('loading');
+    try {
+      const schedule = await fetchPrayerMonth(
+        {
+          countryCode,
+          countryName,
+          city,
+          regionCode: tempSpiritualSettings.prayerRegionCode,
+          regionName: tempSpiritualSettings.prayerRegionName,
+          geonameId: prayerPlaceId,
+          latitude: prayerLatitude,
+          longitude: prayerLongitude,
+          timezone: prayerTimezone,
+        },
+        tempSpiritualSettings.prayerMethod,
+      );
+      setPrayerSchedule(schedule);
+      setPrayerLoadState('ready');
+    } catch (error) {
+      console.error('Unable to fetch prayer times.', error);
+      setPrayerLoadState('error');
+    }
+  };
+
+  const handleFirstRunComplete = (islamicToolsEnabled: boolean, startTour: boolean) => {
+    setSpiritualSettings((current) => ({ ...current, islamicToolsEnabled }));
+    setTempSpiritualSettings((current) => ({ ...current, islamicToolsEnabled }));
+    try {
+      localStorage.setItem('pomodoro_onboarding_complete', 'true');
+    } catch (error) {
+      console.error('Unable to save onboarding completion.', error);
+      setSpiritualSaveError(t.settingsStorageError);
+    }
+    setShowOnboarding(false);
+    setShowProductTour(startTour);
+    if (startTour) setView('timer');
+  };
+
+  const handlePrayerConfirmation = () => {
+    if (!prayerPausePending) return;
+    setPrayerPausePending(false);
+    setPrayerReminderTest(false);
+    setPrayerNotification(null);
+    stopPrayerCue();
+    setPrayerAudioStatus('');
+    const AudioContextClass = window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (AudioContextClass && !audioContextRef.current) audioContextRef.current = new AudioContextClass();
+    if (audioContextRef.current?.state === 'suspended') void audioContextRef.current.resume();
+    if (reminderTimeLeftMs !== null) {
+      const nextAt = Date.now() + reminderTimeLeftMs;
+      reminderNextAtRef.current = nextAt;
+      setReminderNextAt(nextAt);
+      setReminderTimeLeftMs(null);
+    }
+    deadlineRef.current = Date.now() + timeLeft * 1000;
+    setIsRunning(true);
   };
 
   const handleExportBackup = () => {
@@ -1320,8 +2069,79 @@ export default function App() {
     });
   };
 
+  const addCompletedSessionTask = () => {
+    const text = sessionTaskInput.trim();
+    if (!text || !plannedSession || plannedSession.isActive) return;
+    const task = { id: `session-task-${Date.now()}-${Math.random()}`, text, completed: false };
+    logActivity({ type: 'task_added', taskId: task.id });
+    setPlannedSession((session) => session && !session.isActive
+      ? { ...session, tasks: [...session.tasks, task] }
+      : session);
+    setSessionTaskInput('');
+  };
+
+  const editCompletedSessionTask = (task: TodoTask) => {
+    if (plannedSession?.isActive) return;
+    setEditingSessionTaskId(task.id);
+    setSessionTaskDraft(task.text);
+  };
+
+  const saveCompletedSessionTask = () => {
+    const text = sessionTaskDraft.trim();
+    if (!text || !editingSessionTaskId || plannedSession?.isActive) return;
+    setPlannedSession((session) => session && !session.isActive
+      ? {
+        ...session,
+        tasks: session.tasks.map((task) =>
+          task.id === editingSessionTaskId ? { ...task, text } : task),
+      }
+      : session);
+    setEditingSessionTaskId(null);
+    setSessionTaskDraft('');
+  };
+
+  const removeCompletedSessionTask = (id: string) => {
+    const session = plannedSession;
+    if (!session || session.isActive || !session.tasks.some((task) => task.id === id)) return;
+    logActivity({ type: 'task_removed', taskId: id });
+    const tasks = session.tasks.filter((task) => task.id !== id);
+    const currentTaskId = session.tasks[session.currentTaskIndex]?.id;
+    const pendingTaskId = session.tasks[session.pendingTaskIndex]?.id;
+    const currentTaskIndex = tasks.length === 0
+      ? 0
+      : Math.max(0, tasks.findIndex((task) => task.id === currentTaskId));
+    const pendingTaskIndex = tasks.length === 0
+      ? 0
+      : Math.max(0, tasks.findIndex((task) => task.id === pendingTaskId));
+    setPlannedSession({ ...session, tasks, currentTaskIndex, pendingTaskIndex });
+    if (editingSessionTaskId === id) {
+      setEditingSessionTaskId(null);
+      setSessionTaskDraft('');
+    }
+  };
+
+  const moveCompletedSessionTask = (id: string, offset: -1 | 1) => {
+    setPlannedSession((session) => {
+      if (!session || session.isActive) return session;
+      const currentIndex = session.tasks.findIndex((task) => task.id === id);
+      const nextIndex = currentIndex + offset;
+      if (currentIndex < 0 || nextIndex < 0 || nextIndex >= session.tasks.length) return session;
+      const currentTaskId = session.tasks[session.currentTaskIndex]?.id;
+      const pendingTaskId = session.tasks[session.pendingTaskIndex]?.id;
+      const tasks = [...session.tasks];
+      [tasks[currentIndex], tasks[nextIndex]] = [tasks[nextIndex], tasks[currentIndex]];
+      return {
+        ...session,
+        tasks,
+        currentTaskIndex: Math.max(0, tasks.findIndex((task) => task.id === currentTaskId)),
+        pendingTaskIndex: Math.max(0, tasks.findIndex((task) => task.id === pendingTaskId)),
+      };
+    });
+  };
+
   const startPlannedSession = () => {
-    if (plannerTasks.length === 0) return;
+    if (plannerTasks.length === 0 || prayerPausePending) return;
+    dismissCompletionSummary();
     const effectiveBreakCount = selectedPlannerBreakCount;
     const breakDuration = selectedPlannerBreakDuration;
     const focusBlockMinutes = plannerFocusBlocks;
@@ -1347,11 +2167,14 @@ export default function App() {
       breakCount: effectiveBreakCount,
       pendingTaskIndex: 0,
     };
+    setEditingSessionTaskId(null);
+    setSessionTaskDraft('');
     setPlannedSession(nextSession);
     setTimeLeft(focusBlockMinutes[0] * 60);
     setView('timer');
     deadlineRef.current = Date.now() + focusBlockMinutes[0] * 60 * 1000;
     setIsRunning(true);
+    scheduleMindfulReminder(focusBlockMinutes[0]);
   };
 
   // SVG circle parameters
@@ -1360,14 +2183,48 @@ export default function App() {
   const strokeDashoffset = circumference * (1 - progress);
 
   const currentConfig = modeConfig[mode];
+  const prayerLabels: Record<PrayerName, string> = {
+    Fajr: t.prayerFajr,
+    Dhuhr: t.prayerDhuhr,
+    Asr: t.prayerAsr,
+    Maghrib: t.prayerMaghrib,
+    Isha: t.prayerIsha,
+  };
+  const reminderLabels: Record<ReminderKind, string> = {
+    quran: t.reminderQuran,
+    dua: t.reminderDua,
+    istighfar: t.reminderIstighfar,
+    salawat: t.reminderSalawat,
+  };
 
   return (
-    <div className={`min-h-screen app-shell flex flex-col items-center justify-center p-4 font-sans ${theme}`}>
-      <div className="w-full max-w-md flex justify-between items-center mb-4">
+    <div
+      className={`min-h-screen app-shell font-sans ${theme} ${showProductTour ? 'tour-active' : ''}`}
+      data-quran-playing={isQuranPlaying}
+      data-quran-player-visible={isQuranMiniPlayerVisible}
+      data-timer-mode={mode}
+    >
+      <header className="app-header-shell">
+      <div className="app-header">
+        <button type="button" className="app-brand" onClick={() => setView('timer')} aria-label={t.title}>
+          <img className="app-brand-mark" src="./icon.svg" alt="" aria-hidden="true" />
+          <span className="app-brand-copy">
+            <span className="app-brand-name">{t.title}</span>
+            <span className="app-brand-tagline">{t.subtitle}</span>
+          </span>
+        </button>
+        <div className="app-header-actions">
+        {!isNativeApp && (
+          <button type="button" onClick={() => setView('downloads')} className="header-download-button">
+            <Download size={17} aria-hidden="true" />
+            <span>{t.downloadApp}</span>
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setLanguage(language === 'en' ? 'ar' : 'en')}
-          className="theme-toggle px-3 py-2 rounded-lg border flex items-center gap-2 text-sm font-medium"
+          className="theme-toggle header-icon-button"
+          aria-label={language === 'en' ? 'العربية' : 'English'}
         >
           <span>{language === 'en' ? '🇪🇬' : '🇺🇸'}</span>
           <span>{language === 'en' ? 'عربي' : 'English'}</span>
@@ -1376,15 +2233,17 @@ export default function App() {
           <button
             type="button"
             onClick={handleOpenSettings}
-            className="theme-toggle px-3 h-10 rounded-lg border flex items-center gap-2 text-sm font-medium"
+            className="theme-toggle header-icon-button"
+            aria-label={t.settings}
+            data-tour="settings"
           >
-            <span>🎯</span>
-            <span>{t.goals}</span>
+            <SettingsIcon size={17} aria-hidden="true" />
+            <span className="header-action-label">{t.settings}</span>
           </button>
           <button
             type="button"
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            className="theme-toggle w-10 h-10 rounded-full border flex items-center justify-center"
+            className="theme-toggle header-theme-button"
             aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
           >
             {theme === 'dark' ? (
@@ -1419,48 +2278,150 @@ export default function App() {
             )}
           </button>
         </div>
+        <button
+          type="button"
+          onClick={() => setShowMobileNavigation((visible) => !visible)}
+          className="mobile-menu-toggle"
+          aria-expanded={showMobileNavigation}
+          aria-controls="primary-navigation"
+          aria-label={showMobileNavigation ? t.closeNavigation : t.openNavigation}
+        >
+          {showMobileNavigation ? <X size={20} aria-hidden="true" /> : <Menu size={20} aria-hidden="true" />}
+        </button>
       </div>
+      </div>
+      <nav id="primary-navigation" data-tour="navigation" className={`primary-navigation ${showMobileNavigation ? 'is-open' : ''}`} aria-label={t.mainNavigation}>
+        {navigationItems.map(({ id, label, Icon }) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => {
+              setView(id);
+              setShowMobileNavigation(false);
+            }}
+            className={`navigation-item ${view === id ? 'is-active' : ''}`}
+            aria-current={view === id ? 'page' : undefined}
+          >
+            <Icon size={17} aria-hidden="true" />
+            <span>{label}</span>
+          </button>
+        ))}
+        {!isNativeApp && (
+          <button
+            type="button"
+            onClick={() => {
+              setView('downloads');
+              setShowMobileNavigation(false);
+            }}
+            className={`navigation-download-item ${view === 'downloads' ? 'is-active' : ''}`}
+            aria-current={view === 'downloads' ? 'page' : undefined}
+          >
+            <Download size={17} aria-hidden="true" />
+            <span>{t.downloadApp}</span>
+          </button>
+        )}
+      </nav>
+      </header>
 
-      {/* Header */}
-      <div className="text-center mb-6 w-full max-w-md">
-        <h1 className="text-3xl font-bold app-heading flex items-center justify-center gap-2">
-          <span className="text-2xl">🍅</span> <span>{t.title}</span>
-        </h1>
-        <p className="text-gray-500 text-sm mt-1">{t.subtitle}</p>
-      </div>
-
-      <div className="flex flex-wrap justify-center gap-2 mb-6 bg-white rounded-xl p-1.5 shadow-sm border border-gray-100">
-        <button
-          onClick={() => setView('timer')}
-          className={`px-5 py-2 rounded-lg text-sm font-medium ${view === 'timer' ? 'bg-gray-800 text-white' : 'text-gray-600'}`}
-        >
-          {t.timer}
-        </button>
-        <button
-          onClick={() => setView('planner')}
-          className={`px-5 py-2 rounded-lg text-sm font-medium ${view === 'planner' ? 'bg-gray-800 text-white' : 'text-gray-600'}`}
-        >
-          {t.planner}
-        </button>
-        <button
-          onClick={() => setView('reports')}
-          className={`px-5 py-2 rounded-lg text-sm font-medium ${view === 'reports' ? 'bg-gray-800 text-white' : 'text-gray-600'}`}
-        >
-          {t.reports}
-        </button>
-        <button
-          onClick={() => setView('prayers')}
-          className={`px-5 py-2 rounded-lg text-sm font-medium ${view === 'prayers' ? 'bg-gray-800 text-white' : 'text-gray-600'}`}
-        >
-          {t.prayers}
-        </button>
-        <button
-          onClick={() => setView('quran')}
-          className={`px-5 py-2 rounded-lg text-sm font-medium ${view === 'quran' ? 'bg-gray-800 text-white' : 'text-gray-600'}`}
-        >
-          {t.quran}
-        </button>
-      </div>
+      <main className="app-main">
+      {!isOnline && (
+        <div className="w-full max-w-md mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          {t.offlineMode}
+        </div>
+      )}
+      {updateReady && (
+        <div className="w-full max-w-md mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 flex items-center gap-3">
+          <span className="flex-1">{t.updateReady}</span>
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('focus-to-work:apply-update'))}
+            className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-medium"
+          >
+            {t.installUpdate}
+          </button>
+        </div>
+      )}
+      {spiritualSaveError && (
+        <p className="app-alert app-alert-error" role="alert">{spiritualSaveError}</p>
+      )}
+      {activeMindfulReminder && (
+        <aside className="mindful-reminder-toast" role="status" aria-live="polite">
+          <div className="mindful-reminder-heading">
+            <span><Bell size={16} aria-hidden="true" /> {reminderLabels[activeMindfulReminder.kind]}</span>
+            <button
+              type="button"
+              onClick={() => {
+                if (reminderDismissTimeoutRef.current !== null) {
+                  window.clearTimeout(reminderDismissTimeoutRef.current);
+                  reminderDismissTimeoutRef.current = null;
+                }
+                if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+                setActiveMindfulReminder(null);
+              }}
+              aria-label={t.reminderDismiss}
+            >
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+          <p className="mindful-reminder-arabic" lang="ar" dir="rtl">{activeMindfulReminder.arabic}</p>
+          <p className="mindful-reminder-translation">{language === 'ar' ? activeMindfulReminder.source.ar : activeMindfulReminder.source.en}</p>
+          {language === 'ar' && <p className="mindful-reminder-translation">{activeMindfulReminder.english}</p>}
+          {reminderAudioStatus && <p className="mindful-reminder-audio-status">{reminderAudioStatus}</p>}
+        </aside>
+      )}
+      {prayerNotification && (
+        <div className={`prayer-reminder-backdrop ${prayerPausePending ? 'is-paused' : 'is-notice'}`}>
+          <aside
+            className="prayer-reminder-banner"
+            role={prayerPausePending ? 'alertdialog' : 'alert'}
+            aria-modal={prayerPausePending || undefined}
+            aria-labelledby="prayer-reminder-title"
+            aria-describedby="prayer-reminder-description"
+            aria-live="assertive"
+            tabIndex={-1}
+          >
+            <span className="prayer-reminder-icon"><HeartHandshake size={28} aria-hidden="true" /></span>
+            <div className="prayer-reminder-copy">
+              <strong id="prayer-reminder-title">
+                {prayerReminderTest && t.prayerTestPrefix}
+                {t.prayerTimeReached.replace('{prayer}', prayerLabels[prayerNotification])}
+              </strong>
+              <p id="prayer-reminder-description">
+                {prayerReminderTest ? t.prayerTestDescription : prayerPausePending ? t.prayerPauseExplanation : t.prayerNoticeExplanation}
+              </p>
+              {prayerAudioStatus && <p className="prayer-reminder-audio-status">{prayerAudioStatus}</p>}
+            </div>
+            {prayerPausePending ? (
+              <button
+                ref={prayerConfirmButtonRef}
+                type="button"
+                className="prayer-confirm-button"
+                onClick={handlePrayerConfirmation}
+              >
+                {t.prayerResume}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="prayer-dismiss-button"
+                onClick={() => {
+                  setPrayerNotification(null);
+                  setPrayerReminderTest(false);
+                  stopPrayerCue();
+                  setPrayerAudioStatus('');
+                  if (prayerDismissTimeoutRef.current !== null) {
+                    window.clearTimeout(prayerDismissTimeoutRef.current);
+                    prayerDismissTimeoutRef.current = null;
+                  }
+                }}
+                aria-label={t.reminderDismiss}
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
+            )}
+          </aside>
+        </div>
+      )}
 
       {view === 'timer' && (
         <>
@@ -1471,6 +2432,7 @@ export default function App() {
           <button
             key={m}
             onClick={() => handleModeChange(m)}
+            disabled={prayerPausePending}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
               mode === m
                 ? `${modeConfig[m].btnColor} text-white shadow-sm`
@@ -1484,8 +2446,8 @@ export default function App() {
       )}
 
       {/* Timer Display */}
-      <div className={`relative mb-8 timer-ring ${isRunning ? 'is-running' : ''}`}>
-        <svg width="320" height="320" className="transform -rotate-90">
+      <div data-tour="timer" className={`relative mb-8 timer-ring ${isRunning ? 'is-running' : ''}`}>
+        <svg width="320" height="320" viewBox="0 0 320 320" className="timer-ring-svg transform -rotate-90">
           {/* Background circle */}
           <circle
             cx="160"
@@ -1513,7 +2475,12 @@ export default function App() {
           <span className={`text-6xl font-mono font-bold ${currentConfig.color} tracking-wider`}>
             {formatTime(timeLeft)}
           </span>
-          <span className="text-gray-400 text-sm mt-2 uppercase tracking-wide">
+          <span
+            className={`timer-ring-caption text-gray-400 text-sm mt-2 uppercase tracking-wide ${plannedSession?.isActive ? 'is-planned-task' : ''}`}
+            title={plannedSession?.isActive
+              ? `${t.workingOn}: ${plannedSession.tasks[plannedSession.currentTaskIndex]?.text || ''}`
+              : undefined}
+          >
             {plannedSession?.isActive
               ? plannedSession.currentPhase === 'focus'
                 ? plannedSession.tasks.every((task) => task.completed)
@@ -1529,6 +2496,7 @@ export default function App() {
       <div className="flex gap-3 mb-8">
         <button
           onClick={isRunning ? handlePause : handleStart}
+          disabled={prayerPausePending}
           className={`${currentConfig.btnColor} text-white px-8 py-3 rounded-xl font-semibold text-lg shadow-lg shadow-${mode === 'focus' ? 'red' : mode === 'shortBreak' ? 'emerald' : 'blue'}-200 transition-all duration-200 transform hover:scale-105 active:scale-95`}
         >
           {isRunning ? (
@@ -1550,6 +2518,7 @@ export default function App() {
         </button>
         <button
           onClick={handleReset}
+          disabled={prayerPausePending}
           className="bg-white border border-gray-200 text-gray-600 px-6 py-3 rounded-xl font-semibold hover:bg-gray-50 transition-all duration-200 transform hover:scale-105 active:scale-95"
         >
           <span className="flex items-center gap-2">
@@ -1561,6 +2530,42 @@ export default function App() {
         </button>
       </div>
 
+      {completionSummary && (
+        <section className="completion-summary-card" role="status" aria-live="polite" aria-atomic="true">
+          <div className="completion-summary-header">
+            <h2>
+              {completionSummary.kind === 'session'
+                ? t.sessionComplete
+                : completionSummary.kind === 'focus' ? t.focusTimerComplete : t.breakTimerComplete}
+            </h2>
+            <button type="button" onClick={dismissCompletionSummary} aria-label={t.dismissSummary}>
+              <X size={18} aria-hidden="true" />
+            </button>
+          </div>
+          <dl className="completion-summary-stats">
+            {completionSummary.focusMinutes > 0 && (
+              <div>
+                <dt>{t.focusTime}</dt>
+                <dd>{formatDuration(completionSummary.focusMinutes, t)}</dd>
+              </div>
+            )}
+            <div>
+              <dt>{t.elapsedTime}</dt>
+              <dd>{formatDuration(completionSummary.elapsedMinutes, t)}</dd>
+            </div>
+            <div>
+              <dt>{t.tasksDone}</dt>
+              <dd>
+                {completionSummary.totalTasks > 0
+                  ? `${completionSummary.completedTasks} / ${completionSummary.totalTasks}`
+                  : t.noTasks}
+              </dd>
+            </div>
+          </dl>
+        </section>
+      )}
+
+      {spiritualSettings.islamicToolsEnabled && (
       <section className="quran-shortcut w-full max-w-md rounded-xl border p-4 shadow-sm mb-6">
         <div className="flex items-center gap-3">
           <span className="quran-shortcut-icon" aria-hidden="true">۞</span>
@@ -1577,28 +2582,165 @@ export default function App() {
           </button>
         </div>
       </section>
+      )}
 
-      {plannedSession?.isActive && (
-        <div className="w-full max-w-md bg-white rounded-xl p-4 shadow-sm border border-gray-100 mb-6">
-          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">{t.tasksToComplete}</h3>
-          <div className="space-y-2">
-            {plannedSession.tasks.map((task, index) => (
-              <button
-                key={task.id}
-                type="button"
-                onClick={() => togglePlannedTask(task.id)}
-                aria-pressed={task.completed}
-                className={`w-full flex items-center gap-3 p-2 rounded-lg text-left ${
-                  index === plannedSession.currentTaskIndex ? 'bg-red-50 border border-red-100' : ''
-                }`}
-              >
-                <span className={`w-5 h-5 rounded-full border-2 flex-shrink-0 ${task.completed ? 'bg-emerald-500 border-emerald-500' : 'border-gray-300'}`} />
-                <span className={`flex-1 text-sm ${task.completed ? 'line-through text-gray-400' : 'text-gray-700'}`}>{task.text}</span>
-                {index === plannedSession.currentTaskIndex && <span className="text-xs text-red-500">{t.workingOn}</span>}
-              </button>
-            ))}
+      {plannedSession && (
+        <section className="session-task-card w-full max-w-md rounded-xl p-4 shadow-sm border border-gray-100 mb-6">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              {plannedSession.isActive ? t.tasksToComplete : t.sessionTasks}
+            </h3>
+            {!plannedSession.isActive && <span className="session-task-complete-label">{t.sessionComplete}</span>}
           </div>
-        </div>
+          {plannedSession.tasks.length === 0 ? (
+            <p className="text-sm text-gray-400">{t.noTasks}</p>
+          ) : (
+            <div className="space-y-2">
+              {plannedSession.tasks.map((task, index) => (
+                plannedSession.isActive ? (
+                  <button
+                    key={task.id}
+                    type="button"
+                    onClick={() => togglePlannedTask(task.id)}
+                    aria-pressed={task.completed}
+                    className={`w-full flex items-center gap-3 p-2 rounded-lg text-left ${
+                      index === plannedSession.currentTaskIndex ? 'bg-red-50 border border-red-100' : ''
+                    }`}
+                  >
+                    <span className={`w-5 h-5 rounded-full border-2 flex-shrink-0 ${task.completed ? 'bg-emerald-500 border-emerald-500' : 'border-gray-300'}`} />
+                    <span className={`flex-1 text-sm ${task.completed ? 'line-through text-gray-400' : 'text-gray-700'}`}>{task.text}</span>
+                    {index === plannedSession.currentTaskIndex && <span className="text-xs text-red-500">{t.workingOn}</span>}
+                  </button>
+                ) : (
+                  <div key={task.id} className="session-task-row">
+                    <button
+                      type="button"
+                      onClick={() => togglePlannedTask(task.id)}
+                      aria-pressed={task.completed}
+                      aria-label={`${task.completed ? t.markTaskIncomplete : t.markTaskComplete}: ${task.text}`}
+                      className={`session-task-check ${task.completed ? 'is-completed' : ''}`}
+                    >
+                      {task.completed && <Check size={14} aria-hidden="true" />}
+                    </button>
+                    {editingSessionTaskId === task.id ? (
+                      <input
+                        autoFocus
+                        value={sessionTaskDraft}
+                        maxLength={160}
+                        onChange={(event) => setSessionTaskDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') saveCompletedSessionTask();
+                          if (event.key === 'Escape') {
+                            setEditingSessionTaskId(null);
+                            setSessionTaskDraft('');
+                          }
+                        }}
+                        aria-label={t.editSessionTask}
+                        className="session-task-edit-input"
+                      />
+                    ) : (
+                      <span className={`session-task-text ${task.completed ? 'is-completed' : ''}`}>{task.text}</span>
+                    )}
+                    <div className="session-task-actions">
+                      {editingSessionTaskId === task.id ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={saveCompletedSessionTask}
+                            disabled={!sessionTaskDraft.trim()}
+                            className="session-task-action-button is-save"
+                            aria-label={t.saveSessionTask}
+                            title={t.saveSessionTask}
+                          >
+                            <Check size={16} aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingSessionTaskId(null);
+                              setSessionTaskDraft('');
+                            }}
+                            className="session-task-action-button"
+                            aria-label={t.cancel}
+                            title={t.cancel}
+                          >
+                            <X size={16} aria-hidden="true" />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => moveCompletedSessionTask(task.id, -1)}
+                            disabled={index === 0}
+                            className="session-task-action-button"
+                            aria-label={`${t.moveTaskUp}: ${task.text}`}
+                            title={t.moveTaskUp}
+                          >
+                            <ChevronUp size={16} aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => moveCompletedSessionTask(task.id, 1)}
+                            disabled={index === plannedSession.tasks.length - 1}
+                            className="session-task-action-button"
+                            aria-label={`${t.moveTaskDown}: ${task.text}`}
+                            title={t.moveTaskDown}
+                          >
+                            <ChevronDown size={16} aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => editCompletedSessionTask(task)}
+                            className="session-task-action-button"
+                            aria-label={`${t.editSessionTask}: ${task.text}`}
+                            title={t.editSessionTask}
+                          >
+                            <Pencil size={15} aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeCompletedSessionTask(task.id)}
+                            className="session-task-action-button is-remove"
+                            aria-label={`${t.removeSessionTask}: ${task.text}`}
+                            title={t.removeSessionTask}
+                          >
+                            <Trash2 size={15} aria-hidden="true" />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )
+              ))}
+            </div>
+          )}
+          {!plannedSession.isActive && (
+            <form
+              className="session-task-add-row"
+              onSubmit={(event) => {
+                event.preventDefault();
+                addCompletedSessionTask();
+              }}
+            >
+              <input
+                value={sessionTaskInput}
+                maxLength={160}
+                onChange={(event) => setSessionTaskInput(event.target.value)}
+                placeholder={t.taskPlaceholder}
+                aria-label={t.addSessionTask}
+              />
+              <button
+                type="submit"
+                disabled={!sessionTaskInput.trim()}
+                aria-label={t.addSessionTask}
+                title={t.addSessionTask}
+              >
+                <Plus size={18} aria-hidden="true" />
+              </button>
+            </form>
+          )}
+        </section>
       )}
 
       {/* Stats & Settings */}
@@ -1661,10 +2803,12 @@ export default function App() {
             }`}
           />
         ))}
-        <span className="text-xs text-gray-400 ml-1">→ long break</span>
+        <span className="text-xs text-gray-400 mx-1">
+          {language === 'ar' ? '←' : '→'} {t.longBreak}
+        </span>
       </div>
 
-      <div className="w-full max-w-md bg-white rounded-xl p-4 shadow-sm border border-gray-100 mt-6">
+      <div data-tour="tasks" className="w-full max-w-md bg-white rounded-xl p-4 shadow-sm border border-gray-100 mt-6">
         <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">{t.todoList}</h3>
         <div className="flex gap-2 mb-3">
           <input
@@ -2243,21 +3387,171 @@ export default function App() {
         </section>
       )}
 
+      {view === 'about' && (
+        <section className="about-page">
+          <div className="about-hero">
+            <div className="about-hero-copy">
+              <p className="about-eyebrow">{t.aboutEyebrow}</p>
+              <h1>{t.aboutTitle}</h1>
+              <p className="about-lead">{t.aboutDescription}</p>
+              <div className="about-principles">
+                <article className="about-principle-card">
+                  <span className="about-principle-icon" aria-hidden="true">✦</span>
+                  <div>
+                    <h2>{t.aboutMissionHeading}</h2>
+                    <p>{t.aboutMission}</p>
+                  </div>
+                </article>
+                <article className="about-principle-card">
+                  <span className="about-principle-icon" aria-hidden="true">◎</span>
+                  <div>
+                    <h2>{t.aboutVisionHeading}</h2>
+                    <p>{t.aboutVision}</p>
+                  </div>
+                </article>
+              </div>
+            </div>
+            <div className="about-hero-art" aria-hidden="true">
+              <div className="about-orbit orbit-outer" />
+              <div className="about-orbit orbit-inner" />
+              <div className="about-tomato">🍅</div>
+              <span className="about-art-label">{t.aboutArtLabel}</span>
+            </div>
+          </div>
+
+          <section className="developer-card">
+            <div className="developer-photo-wrap">
+              <img
+                src="https://mohamed-hatem-web.vercel.app/img/my-photo.png"
+                alt={t.aboutDeveloperPhotoAlt}
+                className="developer-photo"
+                loading="lazy"
+              />
+              <span className="developer-photo-caption">{t.aboutDeveloperCaption}</span>
+            </div>
+            <div className="developer-details">
+              <p className="about-eyebrow">{t.aboutDeveloperEyebrow}</p>
+              <h2>{t.aboutDeveloperName}</h2>
+              <p className="developer-role">{t.aboutDeveloperRole}</p>
+              <p>{t.aboutDeveloperBio}</p>
+              <p>{t.aboutProjectBio}</p>
+              <div className="developer-links" aria-label={t.aboutSocialLinks}>
+                <a href="https://github.com/MohamedHatem1414" target="_blank" rel="noopener noreferrer">
+                  <Github size={16} aria-hidden="true" />{t.aboutGithub}
+                </a>
+                <a href="https://www.linkedin.com/in/mohamed-hatem-13642b363/" target="_blank" rel="noopener noreferrer">
+                  <Linkedin size={16} aria-hidden="true" />{t.aboutLinkedin}
+                </a>
+                <a href="https://mohamed-hatem-web.vercel.app" target="_blank" rel="noopener noreferrer">
+                  <Laptop size={16} aria-hidden="true" />{t.aboutPortfolio}
+                </a>
+                <a href="mailto:mohamedhatem.web@gmail.com">
+                  <Mail size={16} aria-hidden="true" />{t.aboutEmail}
+                </a>
+              </div>
+              <p className="developer-signature">{t.aboutDeveloperSignature}</p>
+            </div>
+          </section>
+          <p className="about-closing-line">{t.aboutClosingLine}</p>
+        </section>
+      )}
+
+      {view === 'downloads' && !isNativeApp && (
+        <section className="w-full max-w-3xl bg-white rounded-xl p-5 shadow-sm border border-gray-100 mb-6">
+          <h2 className="text-lg font-bold text-gray-800 mb-2">{t.downloadApp}</h2>
+          <p className="text-sm text-gray-500 mb-5">{t.downloadAppHint}</p>
+          {offlineReady && (
+            <p className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+              {t.offlineReady}
+            </p>
+          )}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <article className="download-card rounded-xl border border-gray-100 p-4">
+              <strong className="download-platform-title"><span className="platform-icon android-platform-icon"><Smartphone size={19} aria-hidden="true" /></span>{t.androidApp}</strong>
+              <p className="text-sm text-gray-500 my-2">{t.androidAppHint}</p>
+              <a
+                href={`./downloads/focus-to-work.apk?v=${encodeURIComponent(__APP_VERSION__)}`}
+                download="focus-to-work.apk"
+                className="download-primary-button android-download-button"
+              >
+                <MonitorDown size={17} aria-hidden="true" />
+                {t.downloadAndroid}
+              </a>
+            </article>
+            <article className="download-card rounded-xl border border-gray-100 p-4">
+              <strong className="download-platform-title"><span className="platform-icon apple-platform-icon"><Apple size={19} aria-hidden="true" /></span>{t.iphoneApp}</strong>
+              <p className="text-sm text-gray-500 my-2">{t.iphoneAppHint}</p>
+              <button
+                type="button"
+                onClick={() => setShowIosSetup((visible) => !visible)}
+                className="download-secondary-button"
+                aria-expanded={showIosSetup}
+              >
+                <Apple size={17} aria-hidden="true" />
+                {showIosSetup ? t.hideIosSetup : t.openPwaInstructions}
+              </button>
+              {showIosSetup && (
+                <ol className="ios-setup-steps">
+                  <li>{t.iosSetupStepOne}</li>
+                  <li>{t.iosSetupStepTwo}</li>
+                  <li>{t.iosSetupStepThree}</li>
+                </ol>
+              )}
+            </article>
+            <article className="download-card rounded-xl border border-gray-100 p-4">
+              <strong className="download-platform-title"><span className="platform-icon windows-platform-icon"><MonitorDown size={19} aria-hidden="true" /></span>{t.windowsApp}</strong>
+              <p className="text-sm text-gray-500 my-2">{t.desktopAppHint}</p>
+              <div className="flex flex-wrap gap-2">
+                <a
+                  href={`./downloads/focus-to-work-windows.exe?v=${encodeURIComponent(__APP_VERSION__)}`}
+                  download="focus-to-work-windows.exe"
+                  className="download-primary-button windows-download-button"
+                >
+                  <Download size={17} aria-hidden="true" />
+                  <span>{t.downloadWindows}</span>
+                  <span className="installer-format-badge">.EXE</span>
+                </a>
+                <a
+                  href={`./downloads/focus-to-work-windows.msi?v=${encodeURIComponent(__APP_VERSION__)}`}
+                  download="focus-to-work-windows.msi"
+                  className="download-secondary-button msi-download-button"
+                >
+                  <Package size={17} aria-hidden="true" />
+                  <span>MSI</span>
+                </a>
+              </div>
+              <p className="installer-note">{t.windowsInstallerNote}</p>
+            </article>
+            <article className="download-card rounded-xl border border-gray-100 p-4">
+              <strong className="download-platform-title"><span className="platform-icon other-platform-icon"><Laptop size={19} aria-hidden="true" /></span>{t.macLinuxApp}</strong>
+              <p className="text-sm text-gray-500 my-2">{t.macLinuxAppHint}</p>
+              <button type="button" disabled className="download-secondary-button preparing-download-button">
+                {t.preparingDesktop}
+              </button>
+            </article>
+          </div>
+        </section>
+      )}
+
       <QuranLibrary
         language={language}
         isActive={view === 'quran'}
         onOpenLibrary={() => setView('quran')}
+        onPlaybackChange={handleQuranPlaybackChange}
+        onMiniPlayerVisibilityChange={handleQuranMiniPlayerVisibilityChange}
       />
 
       {/* Settings Modal */}
       {showSettings && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-sm max-h-[90vh] overflow-y-auto shadow-2xl transform animate-in">
+        <div className="settings-backdrop">
+          <div className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title">
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold text-gray-800">⚙️ {t.settings}</h2>
+              <h2 id="settings-dialog-title" className="text-xl font-bold text-gray-800">⚙️ {t.settings}</h2>
               <button
+                type="button"
                 onClick={() => setShowSettings(false)}
                 className="text-gray-400 hover:text-gray-600 transition-colors"
+                aria-label={t.reminderDismiss}
               >
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -2346,14 +3640,30 @@ export default function App() {
               </div>
             </section>
 
+            <SpiritualSettingsPanel
+              language={language}
+              preferences={tempSpiritualSettings}
+              schedule={prayerSchedule}
+              prayerLoadState={prayerLoadState}
+              onChange={setTempSpiritualSettings}
+              onLoadPrayerTimes={handleLoadPrayerTimes}
+              onTestMindfulReminder={handleTestMindfulReminder}
+              onTestPrayerReminder={handleTestPrayerReminder}
+            />
+            {spiritualSaveError && (
+              <p className="app-alert app-alert-error mt-4" role="alert">{spiritualSaveError}</p>
+            )}
+
             <div className="flex gap-3 mt-6">
               <button
+                type="button"
                 onClick={() => setShowSettings(false)}
                 className="flex-1 py-2.5 border border-gray-200 text-gray-600 rounded-lg font-medium hover:bg-gray-50 transition-all"
               >
                 {t.cancel}
               </button>
               <button
+                type="button"
                 onClick={handleSaveSettings}
                 className="flex-1 py-2.5 bg-gray-800 text-white rounded-lg font-medium hover:bg-gray-700 transition-all"
               >
@@ -2364,8 +3674,9 @@ export default function App() {
         </div>
       )}
 
+      </main>
       {/* Footer */}
-      <footer className="mt-auto pt-8 pb-4 text-center">
+      <footer className="app-footer">
         <a
           href="https://mohamed-hatem-web.vercel.app"
           target="_blank"
@@ -2387,6 +3698,14 @@ export default function App() {
           {t.dataSaved} • {new Date().toLocaleDateString(language === 'ar' ? 'ar-EG' : 'en-US')}
         </p>
       </footer>
+      <FirstRunExperience
+        language={language}
+        theme={theme}
+        open={showOnboarding}
+        islamicToolsEnabled={spiritualSettings.islamicToolsEnabled}
+        onComplete={handleFirstRunComplete}
+        onTourChange={handleTourChange}
+      />
     </div>
   );
 }

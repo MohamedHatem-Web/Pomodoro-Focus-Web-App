@@ -1,0 +1,9 @@
+def buildRoot = new File(
+    System.getenv('FOCUS_TO_WORK_GRADLE_BUILD_ROOT') ?:
+        new File(System.getProperty('java.io.tmpdir'), 'focus-to-work-gradle-build').absolutePath
+)
+
+gradle.beforeProject { project ->
+    def projectName = project.path == ':' ? 'root' : project.path.replace(':', '_').replaceFirst('^_', '')
+    project.buildDir = new File(buildRoot, projectName)
+}

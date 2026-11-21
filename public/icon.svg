@@ -1,8 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#fef2f2"/>
-  <circle cx="256" cy="280" r="140" fill="#ef4444"/>
-  <ellipse cx="220" cy="240" rx="30" ry="20" fill="#fca5a5" opacity="0.4"/>
-  <path d="M256 140 C256 140 240 120 260 100 C280 80 290 110 270 130 C260 140 256 140 256 140Z" fill="#22c55e"/>
-  <path d="M256 140 C256 140 270 115 290 110 C310 105 300 130 280 135 C265 140 256 140 256 140Z" fill="#16a34a"/>
-  <rect x="250" y="125" width="12" height="30" rx="6" fill="#15803d"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#142238"/>
+      <stop offset="1" stop-color="#263750"/>
+    </linearGradient>
+    <linearGradient id="progress" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffab70"/>
+      <stop offset="1" stop-color="#ff6d68"/>
+    </linearGradient>
+    <filter id="face-shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#080f1c" flood-opacity=".28"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#background)"/>
+  <circle cx="256" cy="276" r="177" fill="#ffffff" opacity=".035"/>
+  <rect x="232" y="58" width="48" height="48" rx="16" fill="#f7c56c"/>
+  <rect x="196" y="96" width="120" height="20" rx="10" fill="#f7c56c"/>
+  <circle cx="256" cy="276" r="154" fill="none" stroke="#ffffff" stroke-opacity=".12" stroke-width="24"/>
+  <path d="M256 122a154 154 0 1 1-133 231" fill="none" stroke="url(#progress)" stroke-linecap="round" stroke-width="24"/>
+  <circle cx="256" cy="276" r="105" fill="#f8f6f1" filter="url(#face-shadow)"/>
+  <path d="M256 204v72l56 33" fill="none" stroke="#24334a" stroke-linecap="round" stroke-linejoin="round" stroke-width="15"/>
+  <circle cx="256" cy="276" r="13" fill="#ff7768"/>
 </svg>

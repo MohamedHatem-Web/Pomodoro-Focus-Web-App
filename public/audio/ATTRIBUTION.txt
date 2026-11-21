@@ -1,0 +1,6 @@
+Audio excerpt: "The Adhan - Muslim Call to Prayer - Aaqib Azeez.mp3"
+Creator: Atcovi
+Source: https://commons.wikimedia.org/wiki/File:The_Adhan_-_Muslim_Call_to_Prayer_-_Aaqib_Azeez.mp3
+License: Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+License URL: https://creativecommons.org/licenses/by-sa/4.0/
+Changes: Shortened to the opening 5.15 seconds and given gentle fade-in/fade-out.
